@@ -33,9 +33,26 @@ USAGE:
 
 import json
 import os
+import logging
 from datetime import date, datetime, timedelta
 from typing import List, Dict, Optional
 from openai import OpenAI
+
+# Logger setup
+logger = logging.getLogger('audit_planner')
+logger.setLevel(logging.INFO)
+
+# Make sure logger has handlers, avoid duplicate handlers if imported multiple times
+if not logger.handlers:
+    log_dir = os.path.dirname(os.path.abspath(__file__))
+    log_file = os.path.join(log_dir, 'audit_planner.log')
+    try:
+        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s')
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+    except Exception as e:
+        print(f"Warning: Failed to initialize audit planner log file: {e}")
 
 # Constants
 WORKING_DAYS_PER_MONTH = 22
@@ -69,14 +86,17 @@ class AuditPlanner:
     
     def __init__(self, groq_api_key: Optional[str] = None):
         """Initialize with Groq API key."""
+        logger.info("Initializing AuditPlanner service...")
         self.api_key = groq_api_key or os.getenv("GROQ_API_KEY")
         if not self.api_key:
+            logger.error("Failed to initialize AuditPlanner: GROQ_API_KEY is missing!")
             raise ValueError("GROQ_API_KEY is required")
         
         self.client = OpenAI(
             api_key=self.api_key,
             base_url="https://api.groq.com/openai/v1"
         )
+        logger.info("AuditPlanner service initialized successfully.")
     
     def generate_plan(
         self,
@@ -101,11 +121,16 @@ class AuditPlanner:
             next_month = (today.replace(day=1) + timedelta(days=32)).replace(day=1)
             plan_month = next_month.strftime("%Y-%m")
         
+        logger.info(f"Starting audit planning for month: {plan_month}. Total input branches: {len(branches)}, auditors: {len(auditors)}")
+        
         # Calculate basic capacity
         total_available_days = len(auditors) * WORKING_DAYS_PER_MONTH
         total_required_days = sum(get_audit_days(b["risk_score"]) for b in branches)
         
+        logger.info(f"Capacity Assessment: {total_required_days} required days vs {total_available_days} available days.")
+        
         # Prepare simplified data for Groq
+        logger.info("Simplifying branch list and mapping risk scores to grades and durations...")
         branches_simple = []
         for b in branches:
             branches_simple.append({
@@ -116,6 +141,7 @@ class AuditPlanner:
                 "audit_days": get_audit_days(b["risk_score"])
             })
         
+        logger.info("Simplifying auditor list and matching metadata...")
         auditors_simple = []
         for a in auditors:
             auditors_simple.append({
@@ -126,6 +152,7 @@ class AuditPlanner:
             })
         
         # Build prompt for Groq
+        logger.info("Building prompt constraints for Groq scheduler...")
         prompt = self._build_prompt(
             branches_simple, 
             auditors_simple, 
@@ -136,6 +163,7 @@ class AuditPlanner:
         
         # Call Groq
         try:
+            logger.info("Requesting completion from Llama-3.3 on Groq API...")
             response = self.client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=[
@@ -151,7 +179,12 @@ class AuditPlanner:
             )
             
             raw_response = response.choices[0].message.content
+            logger.info("Successfully received response from Groq. Parsing JSON payload...")
             result = json.loads(raw_response)
+            
+            schedule_count = len(result.get("schedule", []))
+            unscheduled_count = len(result.get("unscheduled", []))
+            logger.info(f"Plan generated successfully. Allocated {schedule_count} branches, leaving {unscheduled_count} unscheduled.")
             
             # Add summary
             result["summary"] = {
@@ -167,6 +200,7 @@ class AuditPlanner:
             return result
             
         except Exception as e:
+            logger.error(f"Failed to generate audit schedule: {str(e)}")
             return {
                 "error": str(e),
                 "schedule": [],
@@ -181,56 +215,55 @@ class AuditPlanner:
     
     def _build_prompt(self, branches, auditors, plan_month, req_days, avail_days) -> str:
         """Build prompt for Groq."""
-        
         return f"""
-Create an audit schedule for {plan_month}.
-
-BRANCHES (total {len(branches)}):
-{json.dumps(branches, indent=2)}
-
-AUDITORS (total {len(auditors)}):
-{json.dumps(auditors, indent=2)}
-
-CAPACITY:
-- Required audit days: {req_days}
-- Available auditor days: {avail_days}
-- Each auditor capacity: {WORKING_DAYS_PER_MONTH} days
-
-RULES:
-1. Assign branches based on risk_score (higher risk gets better auditors)
-2. Don't exceed any auditor's capacity
-3. Prioritize: CRITICAL > HIGH > MODERATE > LOW risk
-4. Use audit_days as the duration for each branch
-5. For each scheduled audit, you MUST calculate and provide a "StartDate" and an "EndDate" (format: YYYY-MM-DD).
-6. The first audit for any auditor must start on the first working day (Monday to Friday) of {plan_month}.
-7. An audit runs for exactly "audit_days" working days (skipping Saturdays and Sundays). An auditor's next audit must start on the next working day after their previous audit's "EndDate".
-
-OUTPUT FORMAT (JSON only):
-{{
-  "schedule": [
-    {{
-      "auditor_name": "Rajesh",
-      "branch_name": "Delhi Main",
-      "branch_id": "B001",
-      "risk_score": 450,
-      "risk_grade": "HIGH",
-      "audit_days": 6,
-      "priority": 1,
-      "StartDate": "2026-06-01",
-      "EndDate": "2026-06-08"
-    }}
-  ],
-  "unscheduled": [
-    {{
-      "branch_name": "Branch X",
-      "reason": "No capacity available"
-    }}
-  ]
-}}
-
-Generate schedule now (JSON only, no other text):
-"""
-    
+            Create an audit schedule for {plan_month}.
+            
+            BRANCHES (total {len(branches)}):
+            {json.dumps(branches, indent=2)}
+            
+            AUDITORS (total {len(auditors)}):
+            {json.dumps(auditors, indent=2)}
+            
+            CAPACITY:
+            - Required audit days: {req_days}
+            - Available auditor days: {avail_days}
+            - Each auditor capacity: {WORKING_DAYS_PER_MONTH} days
+            
+            RULES:
+            1. Assign branches based on risk_score (higher risk gets better auditors)
+            2. Don't exceed any auditor's capacity
+            3. Prioritize: CRITICAL > HIGH > MODERATE > LOW risk
+            4. Use audit_days as the duration for each branch
+            5. For each scheduled audit, you MUST calculate and provide a "StartDate" and an "EndDate" (format: YYYY-MM-DD).
+            6. The first audit for any auditor must start on the first working day (Monday to Friday) of {plan_month}.
+            7. An audit runs for exactly "audit_days" working days (skipping Saturdays and Sundays). An auditor's next audit must start on the next working day after their previous audit's "EndDate".
+            
+            OUTPUT FORMAT (JSON only):
+            {{
+              "schedule": [
+                {{
+                  "auditor_name": "Rajesh",
+                  "branch_name": "Delhi Main",
+                  "branch_id": "B001",
+                  "risk_score": 450,
+                  "risk_grade": "HIGH",
+                  "audit_days": 6,
+                  "priority": 1,
+                  "StartDate": "2026-06-01",
+                  "EndDate": "2026-06-08"
+                }}
+              ],
+              "unscheduled": [
+                {{
+                  "branch_name": "Branch X",
+                  "reason": "No capacity available"
+                }}
+              ]
+            }}
+            
+            Generate schedule now (JSON only, no other text):
+        """
+        
     def print_plan(self, result: Dict):
         """Pretty print the plan."""
         if "error" in result:
@@ -254,41 +287,3 @@ Generate schedule now (JSON only, no other text):
             print(f"\n⚠️ UNSCHEDULED BRANCHES:")
             for item in result['unscheduled']:
                 print(f"   • {item['branch_name']}: {item['reason']}")
-
-
-# ============================================================================
-# QUICK TEST
-# ============================================================================
-
-if __name__ == "__main__":
-    # Minimal input data
-    branches = [
-        {"branch_id": "B001", "branch_name": "Delhi Main", "risk_score": 750},
-        {"branch_id": "B002", "branch_name": "Mumbai Central", "risk_score": 450},
-        {"branch_id": "B003", "branch_name": "Bangalore North", "risk_score": 320},
-        {"branch_id": "B004", "branch_name": "Chennai South", "risk_score": 180},
-        {"branch_id": "B005", "branch_name": "Kolkata East", "risk_score": 520},
-        {"branch_id": "B006", "branch_name": "Hyderabad West", "risk_score": 280},
-    ]
-    
-    auditors = [
-        {"auditor_id": "A001", "auditor_name": "Rajesh Kumar", "performance_rating": 4.8},
-        {"auditor_id": "A002", "auditor_name": "Priya Singh", "performance_rating": 4.5},
-        {"auditor_id": "A003", "auditor_name": "Amit Verma", "performance_rating": 4.2},
-    ]
-    
-    # Make sure you have GROQ_API_KEY in environment or pass directly
-    try:
-        planner = AuditPlanner()  # Will read GROQ_API_KEY from env
-        result = planner.generate_plan(branches, auditors, "2026-07")
-        planner.print_plan(result)
-        
-        # Optional: Get JSON output
-        print("\n" + "="*60)
-        print("RAW JSON OUTPUT:")
-        print("="*60)
-        print(json.dumps(result, indent=2))
-        
-    except ValueError as e:
-        print(f"\n❌ Error: {e}")
-        print("Please set GROQ_API_KEY in your environment or pass it to AuditPlanner")
