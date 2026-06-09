@@ -1,9 +1,20 @@
 import os
+import os
 from pathlib import Path
 from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Read .env file manually if it exists
+env_path = BASE_DIR.parent / '.env'
+if env_path.exists():
+    with open(env_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if '=' in line and not line.startswith('#'):
+                key, val = line.split('=', 1)
+                os.environ[key.strip().strip('"').strip("'")] = val.strip().strip('"').strip("'")
 
 # Load .env file with override to force updates
 load_dotenv(BASE_DIR / '.env', override=True)
@@ -23,6 +34,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'corsheaders',
     'authentication',
+    'planner',
 ]
 
 MIDDLEWARE = [
@@ -52,9 +64,6 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'satark.wsgi.application'
 
-
-# Database
-# https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
 DATABASES = {
     'default': {
@@ -87,3 +96,6 @@ USE_TZ = False
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
+
+# CORS Configuration
+CORS_ALLOW_ALL_ORIGINS = True
