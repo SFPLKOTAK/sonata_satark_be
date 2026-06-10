@@ -35,6 +35,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'authentication',
     'planner',
+    'audit',
 ]
 
 MIDDLEWARE = [
