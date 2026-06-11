@@ -292,7 +292,7 @@ def get_current_plan(request):
     if request.method != "GET":
         return JsonResponse({"error": "Method not allowed"}, status=405)
 
-    division = 'Patna'
+    division = request.GET.get("division")
     plan_month = request.GET.get("plan_month")
 
     # Fetch auditors
@@ -383,7 +383,7 @@ def get_planner_overview(request):
     if request.method != "GET":
         return JsonResponse({"error": "Method not allowed"}, status=405)
 
-    division = 'Patna'
+    division = request.GET.get("division")
     plan_month = request.GET.get("plan_month")
 
     if not plan_month:
@@ -571,7 +571,7 @@ def get_capacity_data(request):
     if request.method != "GET":
         return JsonResponse({"error": "Method not allowed"}, status=405)
 
-    division = 'Patna'
+    division = request.GET.get("division")
     plan_month = request.GET.get("plan_month")
 
     if not plan_month:
