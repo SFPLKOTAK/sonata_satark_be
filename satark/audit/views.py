@@ -949,3 +949,188 @@ def save_audit_feedback(request):
     except Exception as e:
         log_error(f"save_audit_feedback: failed: {str(e)}")
         return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def get_center_risk_details(request):
+    """
+    POST API endpoint to retrieve center-level risk details by branch name.
+    Expects plain JSON body:
+    {
+        "token": "...",
+        "branch_name": "Arwal_B",
+        "as_on_date": "2026-06-10"  # Optional
+    }
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+        branch_name = data.get('branch_name', '')
+        as_on_date = data.get('as_on_date')
+    except Exception as e:
+        log_error(f"get_center_risk_details: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid or expired token'}, status=401)
+
+    if not branch_name:
+        return JsonResponse({'success': False, 'message': 'branch_name parameter is required'}, status=400)
+
+    try:
+        branch_id = None
+        with connection.cursor() as cursor:
+            # 1. Look up in CenterRiskScore directly
+            cursor.execute("""
+                SELECT TOP 1 BRANCHID 
+                FROM CenterRiskScore 
+                WHERE BranchName = %s
+            """, [branch_name])
+            row = cursor.fetchone()
+            if row:
+                branch_id = row[0]
+            else:
+                # 2. Look up in VW_Branch_To_GeographicalHierarchy by exact name
+                cursor.execute("""
+                    SELECT TOP 1 BranchID 
+                    FROM [dbo].[VW_Branch_To_GeographicalHierarchy] 
+                    WHERE Branch = %s
+                """, [branch_name])
+                row = cursor.fetchone()
+                if row:
+                    branch_id = row[0]
+                else:
+                    # 3. Strip B/_B suffix and look up in hierarchy view
+                    stripped = branch_name.replace('_B', '').replace(' B', '').strip()
+                    cursor.execute("""
+                        SELECT TOP 1 BranchID 
+                        FROM [dbo].[VW_Branch_To_GeographicalHierarchy] 
+                        WHERE Branch = %s
+                    """, [stripped])
+                    row = cursor.fetchone()
+                    if row:
+                        branch_id = row[0]
+
+        if not branch_id:
+            log_info(f"get_center_risk_details: Could not resolve branch_id for name: {branch_name}")
+            return JsonResponse({
+                'success': True,
+                'center_risks': [],
+                'message': f"Branch '{branch_name}' not resolved to an ID."
+            })
+
+        # Call the stored procedure
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                EXEC SP_GetCenterRiskDetails @BranchID = %s, @AsOnDate = %s
+            """, [branch_id, as_on_date if as_on_date else None])
+            columns = [col[0] for col in cursor.description] if cursor.description else []
+            rows = cursor.fetchall()
+
+        items = []
+        for row in rows:
+            row_dict = dict(zip(columns, row))
+            for key, val in row_dict.items():
+                if isinstance(val, decimal.Decimal):
+                    row_dict[key] = float(val)
+                elif hasattr(val, 'isoformat'):
+                    row_dict[key] = val.isoformat()
+            items.append(row_dict)
+
+        return JsonResponse({
+            'success': True,
+            'center_risks': items
+        })
+
+    except Exception as e:
+        log_error(f"get_center_risk_details: failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def get_branch_overview(request):
+    """
+    POST API endpoint to retrieve branch overview details.
+    Expects plain JSON body:
+    {
+        "token": "...",
+        "branch_name": "Arwal_B",
+        "as_on_date": "2026-06-10"  # Optional
+    }
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+        branch_name = data.get('branch_name', '')
+        as_on_date = data.get('as_on_date')
+    except Exception as e:
+        log_error(f"get_branch_overview: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid or expired token'}, status=401)
+
+    if not branch_name:
+        return JsonResponse({'success': False, 'message': 'branch_name parameter is required'}, status=400)
+
+    try:
+        overview_data = {}
+        with connection.cursor() as cursor:
+            # Call stored procedure
+            # If as_on_date is not provided, we omit it so SP uses default, or we can pass None
+            if as_on_date:
+                cursor.execute("""
+                    EXEC SP_GetBranchOverview @BranchName = %s, @AsOnDate = %s
+                """, [branch_name, as_on_date])
+            else:
+                cursor.execute("""
+                    EXEC SP_GetBranchOverview @BranchName = %s
+                """, [branch_name])
+            
+            # Loop through multiple result sets returned by SP
+            has_more = True
+            while has_more:
+                columns = [col[0] for col in cursor.description] if cursor.description else []
+                rows = cursor.fetchall()
+                
+                items = []
+                for row in rows:
+                    row_dict = dict(zip(columns, row))
+                    for key, val in row_dict.items():
+                        if isinstance(val, decimal.Decimal):
+                            row_dict[key] = float(val)
+                        elif hasattr(val, 'isoformat'):
+                            row_dict[key] = val.isoformat()
+                    items.append(row_dict)
+                
+                if items:
+                    section = items[0].get('Section')
+                    if section == 'OVERVIEW':
+                        overview_data['overview'] = items[0]
+                    elif section == 'HIERARCHY':
+                        overview_data['hierarchy'] = items
+                    elif section == 'PORTFOLIO_HEALTH':
+                        overview_data['portfolio_health'] = items
+                    elif section == 'DISBURSEMENTS':
+                        overview_data['disbursements'] = items
+                    elif section == 'STAFF':
+                        overview_data['staff'] = items
+                        
+                has_more = cursor.nextset()
+
+        return JsonResponse({
+            'success': True,
+            'branch_overview': overview_data
+        })
+
+    except Exception as e:
+        log_error(f"get_branch_overview: failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)

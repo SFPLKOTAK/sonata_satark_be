@@ -2,7 +2,8 @@ from django.urls import path
 from .views import (
     get_checklist_points, create_checklist_point, get_report_types, get_assigned_audits, get_audit_feedback, save_audit_feedback,
     get_center_checklist_points, save_center_checklist_point,
-    get_client_checklist_points, save_client_checklist_point
+    get_client_checklist_points, save_client_checklist_point,
+    get_center_risk_details, get_branch_overview
 )
 
 urlpatterns = [
@@ -21,6 +22,12 @@ urlpatterns = [
     # Client Audit Checklist routes
     path('client-checklists/', get_client_checklist_points, name='get_client_checklist_points'),
     path('client-checklists/save/', save_client_checklist_point, name='save_client_checklist_point'),
+
+    # Center Risk Details route
+    path('centers/risk-details/', get_center_risk_details, name='get_center_risk_details'),
+
+    # Branch Overview route
+    path('branch/overview/', get_branch_overview, name='get_branch_overview'),
 ]
 
 
