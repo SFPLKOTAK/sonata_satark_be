@@ -3,8 +3,8 @@ import decimal
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.db import connection
-from authentication.views import send_encrypted_response, validate_token_user, is_user_admin
-from authentication.utils import decrypt_data, log_info, log_error
+from authentication.views import validate_token_user, is_user_admin
+from authentication.utils import log_info, log_error
 
 # Custom JSON encoder to handle decimals in JSON serialization
 class DecimalEncoder(json.JSONEncoder):
@@ -13,12 +13,18 @@ class DecimalEncoder(json.JSONEncoder):
             return float(obj)
         return super(DecimalEncoder, self).default(obj)
 
+# ============================================================
+# BRANCH AUDIT CHECKLIST ENDPOINTS
+# ============================================================
+
 @csrf_exempt
 def get_checklist_points(request):
     """
-    POST API endpoint to retrieve checklist points.
-    Encrypted JSON body:
+    POST API endpoint to retrieve checklist points for branch audit.
+    Calls `usp_manage_audit_checklist_master` with `@expected_result = 'MANAGE'`.
+    Expects plain JSON body:
     {
+        "token": "...",
         "report_type": "Branch Audit", # Optional filter
         "section_code": "SEC_01"       # Optional filter
     }
@@ -27,45 +33,35 @@ def get_checklist_points(request):
         return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
 
     try:
-        outer_data = json.loads(request.body)
-        encrypted_payload = outer_data.get('data', '')
-        decrypted_str = decrypt_data(encrypted_payload)
-        data = json.loads(decrypted_str) if decrypted_str else {}
+        data = json.loads(request.body) if request.body else {}
         token = data.get('token', '')
     except Exception as e:
-        log_error(f"get_checklist_points: parsing/decryption failed: {str(e)}")
-        return send_encrypted_response({'success': False, 'message': 'Invalid request body or decryption failure'}, status_code=400)
+        log_error(f"get_checklist_points: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
 
     user = validate_token_user(token)
     if not user:
-        return send_encrypted_response({'success': False, 'message': 'Invalid token'}, status_code=401)
+        return JsonResponse({'success': False, 'message': 'Invalid or expired token'}, status=401)
 
     report_type_filter = data.get('report_type')
     section_code_filter = data.get('section_code')
 
+    # Default filters to None so they match NULL check in SP
+    if report_type_filter == 'All':
+        report_type_filter = None
+    if section_code_filter == 'All':
+        section_code_filter = None
+
     try:
-        query = """
-            SELECT 
-                checklist_id, report_type, section_code, section_name, 
-                section_weight_pct, section_display_order, serial_no, 
-                intent_code, intent_title, intent_description, category, 
-                max_score, accepted_deviation_pct, sample_method, is_active,
-                created_at, updated_at
-            FROM [dbo].[audit_branch_checklist_master]
-            WHERE 1=1
-        """
-        params = []
-        if report_type_filter:
-            query += " AND report_type = %s"
-            params.append(report_type_filter)
-        if section_code_filter:
-            query += " AND section_code = %s"
-            params.append(section_code_filter)
-
-        query += " ORDER BY report_type, section_display_order, serial_no"
-
         with connection.cursor() as cursor:
-            cursor.execute(query, params)
+            # Call unified stored procedure with 'MANAGE'
+            sp_query = """
+                EXEC [dbo].[usp_manage_audit_checklist_master]
+                    @expected_result = 'MANAGE',
+                    @report_type = %s,
+                    @section_code = %s
+            """
+            cursor.execute(sp_query, [report_type_filter, section_code_filter])
             columns = [col[0] for col in cursor.description]
             rows = cursor.fetchall()
 
@@ -80,22 +76,23 @@ def get_checklist_points(request):
                     row_dict[key] = val.isoformat()
             items.append(row_dict)
 
-        return send_encrypted_response({
+        return JsonResponse({
             'success': True,
             'checklist_points': items
         })
     except Exception as e:
-        log_error(f"get_checklist_points: DB error: {str(e)}")
-        return send_encrypted_response({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status_code=500)
+        log_error(f"get_checklist_points: SP execution error: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
 
 
 @csrf_exempt
 def create_checklist_point(request):
     """
-    POST API endpoint to create a new checklist point.
-    Calls the stored procedure `usp_add_audit_checklist_item`.
-    Encrypted JSON body:
+    POST API endpoint to create a new checklist point for branch audit.
+    Calls `usp_manage_audit_checklist_master` with `@expected_result = 'ADD'`.
+    Expects plain JSON body:
     {
+        "token": "...",
         "report_type": "Branch Audit",
         "section_code": "SEC_01",
         "section_name": "Center Discipline & Operations",
@@ -114,21 +111,18 @@ def create_checklist_point(request):
         return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
 
     try:
-        outer_data = json.loads(request.body)
-        encrypted_payload = outer_data.get('data', '')
-        decrypted_str = decrypt_data(encrypted_payload)
-        data = json.loads(decrypted_str)
+        data = json.loads(request.body)
         token = data.get('token', '')
     except Exception as e:
-        log_error(f"create_checklist_point: parsing/decryption failed: {str(e)}")
-        return send_encrypted_response({'success': False, 'message': 'Invalid request body or decryption failure'}, status_code=400)
+        log_error(f"create_checklist_point: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
 
     user = validate_token_user(token)
     if not user:
-        return send_encrypted_response({'success': False, 'message': 'Invalid token'}, status_code=401)
+        return JsonResponse({'success': False, 'message': 'Invalid or expired token'}, status=401)
 
     if not is_user_admin(user):
-        return send_encrypted_response({'success': False, 'message': 'Access denied: Admin role required'}, status_code=403)
+        return JsonResponse({'success': False, 'message': 'Access denied: Admin role required'}, status=403)
 
     # Required fields
     required_fields = [
@@ -138,17 +132,17 @@ def create_checklist_point(request):
     ]
     missing = [field for field in required_fields if field not in data]
     if missing:
-        return send_encrypted_response({
+        return JsonResponse({
             'success': False, 
             'message': f"Missing required fields: {', '.join(missing)}"
-        }, status_code=400)
+        }, status=400)
 
     try:
         with connection.cursor() as cursor:
-            # Call stored procedure
-            # In python pyodbc / django, calling stored procedure can be done by EXEC
+            # Call unified stored procedure with 'ADD'
             sp_query = """
-                EXEC [dbo].[usp_add_audit_checklist_item]
+                EXEC [dbo].[usp_manage_audit_checklist_master]
+                    @expected_result = 'ADD',
                     @report_type = %s,
                     @section_code = %s,
                     @section_name = %s,
@@ -182,7 +176,7 @@ def create_checklist_point(request):
             row = cursor.fetchone()
 
         if not row:
-            return send_encrypted_response({'success': False, 'message': 'Stored procedure did not return any records'}, status_code=500)
+            return JsonResponse({'success': False, 'message': 'Stored procedure did not return any records'}, status=500)
 
         created_item = dict(zip(columns, row))
         for key, val in created_item.items():
@@ -192,7 +186,7 @@ def create_checklist_point(request):
                 created_item[key] = val.isoformat()
 
         log_info(f"Successfully created checklist point: {created_item.get('intent_code')} by {user.UserCode}")
-        return send_encrypted_response({
+        return JsonResponse({
             'success': True,
             'message': 'Checklist item created successfully',
             'checklist_point': created_item
@@ -200,34 +194,30 @@ def create_checklist_point(request):
 
     except Exception as e:
         log_error(f"create_checklist_point: stored procedure execution failed: {str(e)}")
-        return send_encrypted_response({'success': False, 'message': f'Stored procedure error: {str(e)}'}, status_code=500)
+        return JsonResponse({'success': False, 'message': f'Stored procedure error: {str(e)}'}, status=500)
 
 
 @csrf_exempt
 def get_report_types(request):
     """
-    POST API endpoint to retrieve all unique report types.
+    POST API endpoint to retrieve all unique report types for branch audit.
     """
     if request.method != 'POST':
         return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
 
     try:
-        outer_data = json.loads(request.body)
-        encrypted_payload = outer_data.get('data', '')
-        decrypted_str = decrypt_data(encrypted_payload)
-        data = json.loads(decrypted_str) if decrypted_str else {}
+        data = json.loads(request.body) if request.body else {}
         token = data.get('token', '')
     except Exception as e:
-        log_error(f"get_report_types: parsing/decryption failed: {str(e)}")
-        return send_encrypted_response({'success': False, 'message': 'Invalid request body or decryption failure'}, status_code=400)
+        log_error(f"get_report_types: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
 
     user = validate_token_user(token)
     if not user:
-        return send_encrypted_response({'success': False, 'message': 'Invalid token'}, status_code=401)
+        return JsonResponse({'success': False, 'message': 'Invalid or expired token'}, status=401)
 
     try:
-        # We fetch distinct report types from audit_branch_checklist_master to ensure backward compatibility,
-        # but merge with default fallback report types.
+        # Fetch distinct report types
         with connection.cursor() as cursor:
             cursor.execute("SELECT DISTINCT report_type FROM [dbo].[audit_branch_checklist_master] WHERE report_type IS NOT NULL")
             db_types = [row[0] for row in cursor.fetchall() if row[0]]
@@ -235,13 +225,329 @@ def get_report_types(request):
         default_types = ["Branch Audit", "Gold Loan Audit", "Concurrent Audit"]
         all_types = list(set(default_types + db_types))
 
-        return send_encrypted_response({
+        return JsonResponse({
             'success': True,
             'report_types': all_types
         })
     except Exception as e:
         log_error(f"get_report_types: DB error: {str(e)}")
-        return send_encrypted_response({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status_code=500)
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+# ============================================================
+# CENTER AUDIT CHECKLIST ENDPOINTS
+# ============================================================
+
+@csrf_exempt
+def get_center_checklist_points(request):
+    """
+    POST API endpoint to retrieve checklist points for center audit.
+    Expects plain JSON body:
+    {
+        "token": "..."
+    }
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+    except Exception as e:
+        log_error(f"get_center_checklist_points: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid or expired token'}, status=401)
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT 
+                    center_checklist_id, serial_no, parameter_code, 
+                    parameter_name, max_score, is_active, created_at, updated_at
+                FROM [dbo].[audit_center_checklist_master]
+                ORDER BY serial_no ASC
+            """)
+            columns = [col[0] for col in cursor.description]
+            rows = cursor.fetchall()
+
+        items = []
+        for row in rows:
+            row_dict = dict(zip(columns, row))
+            # Convert decimals/datetimes
+            for key, val in row_dict.items():
+                if isinstance(val, decimal.Decimal):
+                    row_dict[key] = float(val)
+                elif hasattr(val, 'isoformat'):
+                    row_dict[key] = val.isoformat()
+            items.append(row_dict)
+
+        return JsonResponse({
+            'success': True,
+            'center_checklist_points': items
+        })
+    except Exception as e:
+        log_error(f"get_center_checklist_points: DB error: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def save_center_checklist_point(request):
+    """
+    POST API endpoint to insert or update a checklist point for center audit.
+    Calls stored procedure `usp_save_center_checklist_item`.
+    Expects plain JSON body:
+    {
+        "token": "...",
+        "center_checklist_id": null, -- integer or null (null = INSERT, otherwise UPDATE)
+        "parameter_name": "Are customers sitting in center meeting layout?",
+        "max_score": 10,
+        "is_active": true
+    }
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body)
+        token = data.get('token', '')
+    except Exception as e:
+        log_error(f"save_center_checklist_point: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid or expired token'}, status=401)
+
+    if not is_user_admin(user):
+        return JsonResponse({'success': False, 'message': 'Access denied: Admin role required'}, status=403)
+
+    # Required fields
+    required_fields = ['parameter_name', 'max_score']
+    missing = [field for field in required_fields if field not in data]
+    if missing:
+        return JsonResponse({
+            'success': False, 
+            'message': f"Missing required fields: {', '.join(missing)}"
+        }, status=400)
+
+    try:
+        center_checklist_id = data.get('center_checklist_id')
+        parameter_name = data['parameter_name']
+        max_score = int(data['max_score'])
+        is_active = data.get('is_active', True)
+
+        with connection.cursor() as cursor:
+            # Call stored procedure and capture output variable in SQL Server
+            sp_query = """
+                DECLARE @out_id INT;
+                EXEC [dbo].[usp_save_center_checklist_item]
+                    @center_checklist_id = %s,
+                    @parameter_name = %s,
+                    @max_score = %s,
+                    @is_active = %s,
+                    @new_center_checklist_id = @out_id OUTPUT;
+                SELECT @out_id;
+            """
+            cursor.execute(sp_query, [
+                center_checklist_id,
+                parameter_name,
+                max_score,
+                1 if is_active else 0
+            ])
+            new_id = cursor.fetchone()[0]
+
+            # Query the updated/created row to return
+            cursor.execute("""
+                SELECT 
+                    center_checklist_id, serial_no, parameter_code, 
+                    parameter_name, max_score, is_active, created_at, updated_at
+                FROM [dbo].[audit_center_checklist_master]
+                WHERE center_checklist_id = %s
+            """, [new_id])
+            columns = [col[0] for col in cursor.description]
+            row = cursor.fetchone()
+
+        if not row:
+            return JsonResponse({'success': False, 'message': 'Failed to fetch the saved record'}, status=500)
+
+        saved_item = dict(zip(columns, row))
+        for key, val in saved_item.items():
+            if isinstance(val, decimal.Decimal):
+                saved_item[key] = float(val)
+            elif hasattr(val, 'isoformat'):
+                saved_item[key] = val.isoformat()
+
+        log_info(f"Successfully saved center checklist point ID {new_id} by {user.UserCode}")
+        return JsonResponse({
+            'success': True,
+            'message': 'Center checklist item saved successfully',
+            'center_checklist_point': saved_item
+        })
+
+    except Exception as e:
+        log_error(f"save_center_checklist_point: SP execution failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Stored procedure error: {str(e)}'}, status=500)
+
+
+# ============================================================
+# CLIENT AUDIT CHECKLIST ENDPOINTS
+# ============================================================
+
+@csrf_exempt
+def get_client_checklist_points(request):
+    """
+    POST API endpoint to retrieve checklist points for client audit.
+    Expects plain JSON body:
+    {
+        "token": "..."
+    }
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+    except Exception as e:
+        log_error(f"get_client_checklist_points: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid or expired token'}, status=401)
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT 
+                    client_checklist_id, serial_no, parameter_code, 
+                    parameter_name, max_score, is_active, created_at, updated_at
+                FROM [dbo].[audit_client_checklist_master]
+                ORDER BY serial_no ASC
+            """)
+            columns = [col[0] for col in cursor.description]
+            rows = cursor.fetchall()
+
+        items = []
+        for row in rows:
+            row_dict = dict(zip(columns, row))
+            # Convert decimals/datetimes
+            for key, val in row_dict.items():
+                if isinstance(val, decimal.Decimal):
+                    row_dict[key] = float(val)
+                elif hasattr(val, 'isoformat'):
+                    row_dict[key] = val.isoformat()
+            items.append(row_dict)
+
+        return JsonResponse({
+            'success': True,
+            'client_checklist_points': items
+        })
+    except Exception as e:
+        log_error(f"get_client_checklist_points: DB error: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def save_client_checklist_point(request):
+    """
+    POST API endpoint to insert or update a checklist point for client audit.
+    Calls stored procedure `usp_save_client_checklist_item`.
+    Expects plain JSON body:
+    {
+        "token": "...",
+        "client_checklist_id": null, -- integer or null (null = INSERT, otherwise UPDATE)
+        "parameter_name": "...",
+        "max_score": 10,
+        "is_active": true
+    }
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body)
+        token = data.get('token', '')
+    except Exception as e:
+        log_error(f"save_client_checklist_point: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid or expired token'}, status=401)
+
+    if not is_user_admin(user):
+        return JsonResponse({'success': False, 'message': 'Access denied: Admin role required'}, status=403)
+
+    # Required fields
+    required_fields = ['parameter_name', 'max_score']
+    missing = [field for field in required_fields if field not in data]
+    if missing:
+        return JsonResponse({
+            'success': False, 
+            'message': f"Missing required fields: {', '.join(missing)}"
+        }, status=400)
+
+    try:
+        client_checklist_id = data.get('client_checklist_id')
+        parameter_name = data['parameter_name']
+        max_score = int(data['max_score'])
+        is_active = data.get('is_active', True)
+
+        with connection.cursor() as cursor:
+            # Call stored procedure and capture output variable in SQL Server
+            sp_query = """
+                DECLARE @out_id INT;
+                EXEC [dbo].[usp_save_client_checklist_item]
+                    @client_checklist_id = %s,
+                    @parameter_name = %s,
+                    @max_score = %s,
+                    @is_active = %s,
+                    @new_client_checklist_id = @out_id OUTPUT;
+                SELECT @out_id;
+            """
+            cursor.execute(sp_query, [
+                client_checklist_id,
+                parameter_name,
+                max_score,
+                1 if is_active else 0
+            ])
+            new_id = cursor.fetchone()[0]
+
+            # Query the updated/created row to return
+            cursor.execute("""
+                SELECT 
+                    client_checklist_id, serial_no, parameter_code, 
+                    parameter_name, max_score, is_active, created_at, updated_at
+                FROM [dbo].[audit_client_checklist_master]
+                WHERE client_checklist_id = %s
+            """, [new_id])
+            columns = [col[0] for col in cursor.description]
+            row = cursor.fetchone()
+
+        if not row:
+            return JsonResponse({'success': False, 'message': 'Failed to fetch the saved record'}, status=500)
+
+        saved_item = dict(zip(columns, row))
+        for key, val in saved_item.items():
+            if isinstance(val, decimal.Decimal):
+                saved_item[key] = float(val)
+            elif hasattr(val, 'isoformat'):
+                saved_item[key] = val.isoformat()
+
+        log_info(f"Successfully saved client checklist point ID {new_id} by {user.UserCode}")
+        return JsonResponse({
+            'success': True,
+            'message': 'Client checklist item saved successfully',
+            'client_checklist_point': saved_item
+        })
+
+    except Exception as e:
+        log_error(f"save_client_checklist_point: SP execution failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Stored procedure error: {str(e)}'}, status=500)
 
 
 @csrf_exempt
@@ -250,18 +556,15 @@ def get_assigned_audits(request):
         return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
 
     try:
-        outer_data = json.loads(request.body)
-        encrypted_payload = outer_data.get('data', '')
-        decrypted_str = decrypt_data(encrypted_payload)
-        data = json.loads(decrypted_str) if decrypted_str else {}
+        data = json.loads(request.body) if request.body else {}
         token = data.get('token', '')
     except Exception as e:
-        log_error(f"get_assigned_audits: parsing/decryption failed: {str(e)}")
-        return send_encrypted_response({'success': False, 'message': 'Invalid request body or decryption failure'}, status_code=400)
+        log_error(f"get_assigned_audits: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
 
     user = validate_token_user(token)
     if not user:
-        return send_encrypted_response({'success': False, 'message': 'Invalid token'}, status_code=401)
+        return JsonResponse({'success': False, 'message': 'Invalid token'}, status=401)
 
     try:
         from planner.models import AuditPlanCurrent
@@ -321,14 +624,14 @@ def get_assigned_audits(request):
             "branchesTarget": total_assigned,
             "completionPct": completion_pct
         }
-        return send_encrypted_response({
+        return JsonResponse({
             'success': True,
             'audits': audits,
             'stats': stats
         })
     except Exception as e:
         log_error(f"get_assigned_audits: DB or processing error: {str(e)}")
-        return send_encrypted_response({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status_code=500)
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
 
 
 import base64
@@ -358,33 +661,31 @@ def save_base64_file(filename, base64_str):
 def get_audit_feedback(request):
     """
     POST API endpoint to retrieve checklist feedback for a branch.
-    Encrypted JSON body:
+    Expects plain JSON body:
     {
         "token": "...",
-        "branch_id": "BR-001"
+        "branch_id": "BR-001",
+        "audit_id": 123
     }
     """
     if request.method != 'POST':
         return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
 
     try:
-        outer_data = json.loads(request.body)
-        encrypted_payload = outer_data.get('data', '')
-        decrypted_str = decrypt_data(encrypted_payload)
-        data = json.loads(decrypted_str) if decrypted_str else {}
+        data = json.loads(request.body) if request.body else {}
         token = data.get('token', '')
         branch_id = data.get('branch_id', '')
         audit_id = data.get('audit_id')
     except Exception as e:
-        log_error(f"get_audit_feedback: parsing/decryption failed: {str(e)}")
-        return send_encrypted_response({'success': False, 'message': 'Invalid request body or decryption failure'}, status_code=400)
+        log_error(f"get_audit_feedback: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
 
     user = validate_token_user(token)
     if not user:
-        return send_encrypted_response({'success': False, 'message': 'Invalid token'}, status_code=401)
+        return JsonResponse({'success': False, 'message': 'Invalid token'}, status=401)
 
     if not branch_id:
-        return send_encrypted_response({'success': False, 'message': 'branch_id is required'}, status_code=400)
+        return JsonResponse({'success': False, 'message': 'branch_id is required'}, status=400)
 
     try:
         # Resolve audit_id if not explicitly provided
@@ -436,21 +737,21 @@ def get_audit_feedback(request):
                 "confidentialFileName": row_dict.get("confidential_file_name"),
             })
 
-        return send_encrypted_response({
+        return JsonResponse({
             'success': True,
             'feedback': feedback_list,
             'auditId': feedback_audit_id
         })
     except Exception as e:
         log_error(f"get_audit_feedback: DB error: {str(e)}")
-        return send_encrypted_response({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status_code=500)
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
 
 
 @csrf_exempt
 def save_audit_feedback(request):
     """
     POST API endpoint to save or submit checklist feedback for a branch.
-    Encrypted JSON body:
+    Expects plain JSON body:
     {
         "token": "...",
         "branch_id": "BR-001",
@@ -477,10 +778,7 @@ def save_audit_feedback(request):
         return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
 
     try:
-        outer_data = json.loads(request.body)
-        encrypted_payload = outer_data.get('data', '')
-        decrypted_str = decrypt_data(encrypted_payload)
-        data = json.loads(decrypted_str) if decrypted_str else {}
+        data = json.loads(request.body) if request.body else {}
         token = data.get('token', '')
         branch_id = data.get('branch_id', '')
         audit_id = data.get('audit_id')
@@ -488,15 +786,15 @@ def save_audit_feedback(request):
         general_remarks = data.get('general_remarks', '')
         feedback_items = data.get('feedback_items', [])
     except Exception as e:
-        log_error(f"save_audit_feedback: parsing/decryption failed: {str(e)}")
-        return send_encrypted_response({'success': False, 'message': 'Invalid request body or decryption failure'}, status_code=400)
+        log_error(f"save_audit_feedback: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
 
     user = validate_token_user(token)
     if not user:
-        return send_encrypted_response({'success': False, 'message': 'Invalid token'}, status_code=401)
+        return JsonResponse({'success': False, 'message': 'Invalid token'}, status=401)
 
     if not branch_id:
-        return send_encrypted_response({'success': False, 'message': 'branch_id is required'}, status_code=400)
+        return JsonResponse({'success': False, 'message': 'branch_id is required'}, status=400)
 
     # Resolve audit_id if not explicitly provided
     if not audit_id:
@@ -644,12 +942,10 @@ def save_audit_feedback(request):
                     ) VALUES (%s, %s, %s, %s, GETDATE(), %s)
                 """, [branch_id, action, status_to, user.UserID, general_remarks])
 
-        return send_encrypted_response({
+        return JsonResponse({
             'success': True,
             'message': 'Audit checklist feedback saved successfully'
         })
     except Exception as e:
         log_error(f"save_audit_feedback: failed: {str(e)}")
-        return send_encrypted_response({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status_code=500)
-
-
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)

@@ -60,14 +60,7 @@ def generate_refresh_token(user):
     return jwt.encode(payload, settings.SECRET_KEY, algorithm='HS256')
 
 def send_encrypted_response(data_dict, status_code=200):
-    try:
-        json_str = json.dumps(data_dict)
-        encrypted = encrypt_data(json_str)
-        return JsonResponse({'data': encrypted}, status=status_code)
-    except Exception as e:
-        log_error(f"Failed to encrypt response: {str(e)}")
-        # Graceful fallback response in case encryption fails
-        return JsonResponse({'success': False, 'message': 'Internal Server Error (Encryption Failure)'}, status=500)
+    return JsonResponse(data_dict, status=status_code)
 
 
 from django.contrib.auth.hashers import check_password
@@ -77,23 +70,13 @@ def login_view(request):
         return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
     
     try:
-        # 1. Parse outer JSON structure containing 'data' field
-        outer_data = json.loads(request.body)
-        encrypted_payload = outer_data.get('data', '')
-        
-        # 2. Decrypt inner JSON string
-        decrypted_str = decrypt_data(encrypted_payload)
-        
-        # 3. Parse inner JSON data
-        data = json.loads(decrypted_str)
+        data = json.loads(request.body) if request.body else {}
         print("data",data)
         usercode = data.get('username', '').strip()
         password = data.get('password', '')
-
-        
     except Exception as e:
-        log_error(f"Login request parsing/decryption failed: {str(e)}")
-        return send_encrypted_response({'success': False, 'message': 'Invalid request body or decryption failure'}, status_code=400)
+        log_error(f"Login request parsing failed: {str(e)}")
+        return send_encrypted_response({'success': False, 'message': 'Invalid request body'}, status_code=400)
 
     if not usercode or not password:
         log_error("Login failed: usercode or password missing")
@@ -208,19 +191,11 @@ def refresh_view(request):
         return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
 
     try:
-        # 1. Parse outer JSON structure containing 'data' field
-        outer_data = json.loads(request.body)
-        encrypted_payload = outer_data.get('data', '')
-        
-        # 2. Decrypt inner JSON string
-        decrypted_str = decrypt_data(encrypted_payload)
-        
-        # 3. Parse inner JSON data
-        data = json.loads(decrypted_str)
+        data = json.loads(request.body) if request.body else {}
         refresh_token = data.get('refresh_token', '')
     except Exception as e:
-        log_error(f"Refresh request parsing/decryption failed: {str(e)}")
-        return send_encrypted_response({'success': False, 'message': 'Invalid request body or decryption failure'}, status_code=400)
+        log_error(f"Refresh request parsing failed: {str(e)}")
+        return send_encrypted_response({'success': False, 'message': 'Invalid request body'}, status_code=400)
 
     if not refresh_token:
         log_error("Refresh failed: Refresh token missing")
@@ -295,14 +270,11 @@ def menu_view(request):
         return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
 
     try:
-        outer_data = json.loads(request.body)
-        encrypted_payload = outer_data.get('data', '')
-        decrypted_str = decrypt_data(encrypted_payload)
-        data = json.loads(decrypted_str)
+        data = json.loads(request.body) if request.body else {}
         token = data.get('token', '')
     except Exception as e:
-        log_error(f"Menu request parsing/decryption failed: {str(e)}")
-        return send_encrypted_response({'success': False, 'message': 'Invalid request body or decryption failure'}, status_code=400)
+        log_error(f"Menu request parsing failed: {str(e)}")
+        return send_encrypted_response({'success': False, 'message': 'Invalid request body'}, status_code=400)
 
     user = validate_token_user(token)
     if not user:
@@ -357,14 +329,11 @@ def admin_menu_view(request):
         return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
 
     try:
-        outer_data = json.loads(request.body)
-        encrypted_payload = outer_data.get('data', '')
-        decrypted_str = decrypt_data(encrypted_payload)
-        data = json.loads(decrypted_str)
+        data = json.loads(request.body) if request.body else {}
         token = data.get('token', '')
     except Exception as e:
-        log_error(f"Admin menu request parsing/decryption failed: {str(e)}")
-        return send_encrypted_response({'success': False, 'message': 'Invalid request body or decryption failure'}, status_code=400)
+        log_error(f"Admin menu request parsing failed: {str(e)}")
+        return send_encrypted_response({'success': False, 'message': 'Invalid request body'}, status_code=400)
 
     user = validate_token_user(token)
     if not user:
@@ -412,16 +381,13 @@ def admin_save_menu_view(request):
         return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
 
     try:
-        outer_data = json.loads(request.body)
-        encrypted_payload = outer_data.get('data', '')
-        decrypted_str = decrypt_data(encrypted_payload)
-        data = json.loads(decrypted_str)
+        data = json.loads(request.body) if request.body else {}
         token = data.get('token', '')
         items = data.get('items', [])
         mappings = data.get('mappings', [])
     except Exception as e:
-        log_error(f"Admin menu save request parsing/decryption failed: {str(e)}")
-        return send_encrypted_response({'success': False, 'message': 'Invalid request body or decryption failure'}, status_code=400)
+        log_error(f"Admin menu save request parsing failed: {str(e)}")
+        return send_encrypted_response({'success': False, 'message': 'Invalid request body'}, status_code=400)
 
     user = validate_token_user(token)
     if not user:
@@ -497,14 +463,11 @@ def admin_user_list_view(request):
         return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
 
     try:
-        outer_data = json.loads(request.body)
-        encrypted_payload = outer_data.get('data', '')
-        decrypted_str = decrypt_data(encrypted_payload)
-        data = json.loads(decrypted_str)
+        data = json.loads(request.body) if request.body else {}
         token = data.get('token', '')
     except Exception as e:
-        log_error(f"admin_user_list_view: parse/decrypt failed: {str(e)}")
-        return send_encrypted_response({'success': False, 'message': 'Invalid request body or decryption failure'}, status_code=400)
+        log_error(f"admin_user_list_view: parse failed: {str(e)}")
+        return send_encrypted_response({'success': False, 'message': 'Invalid request body'}, status_code=400)
 
     user = validate_token_user(token)
     if not user:
@@ -563,10 +526,7 @@ def admin_save_user_view(request):
         return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
 
     try:
-        outer_data = json.loads(request.body)
-        encrypted_payload = outer_data.get('data', '')
-        decrypted_str = decrypt_data(encrypted_payload)
-        data = json.loads(decrypted_str)
+        data = json.loads(request.body) if request.body else {}
         token = data.get('token', '')
         user_id = data.get('user_id')
         new_role_id = data.get('role_id')         # int
@@ -574,8 +534,8 @@ def admin_save_user_view(request):
         new_contact = data.get('contact_no')
         new_email = data.get('email')
     except Exception as e:
-        log_error(f"admin_save_user_view: parse/decrypt failed: {str(e)}")
-        return send_encrypted_response({'success': False, 'message': 'Invalid request body or decryption failure'}, status_code=400)
+        log_error(f"admin_save_user_view: parse failed: {str(e)}")
+        return send_encrypted_response({'success': False, 'message': 'Invalid request body'}, status_code=400)
 
     admin_user = validate_token_user(token)
     if not admin_user:
