@@ -3,7 +3,7 @@ from .views import (
     get_checklist_points, create_checklist_point, get_report_types, get_assigned_audits, get_audit_feedback, save_audit_feedback,
     get_center_checklist_points, save_center_checklist_point,
     get_client_checklist_points, save_client_checklist_point,
-    get_center_risk_details, get_branch_overview
+    get_center_risk_details, get_branch_overview, get_customer_risk_details, get_center_disbursements
 )
 
 urlpatterns = [
@@ -25,6 +25,12 @@ urlpatterns = [
 
     # Center Risk Details route
     path('centers/risk-details/', get_center_risk_details, name='get_center_risk_details'),
+
+    # Customer Risk Details route
+    path('customers/risk-details/', get_customer_risk_details, name='get_customer_risk_details'),
+
+    # Center Disbursements route
+    path('centers/disbursements/', get_center_disbursements, name='get_center_disbursements'),
 
     # Branch Overview route
     path('branch/overview/', get_branch_overview, name='get_branch_overview'),

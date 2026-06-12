@@ -1134,3 +1134,136 @@ def get_branch_overview(request):
     except Exception as e:
         log_error(f"get_branch_overview: failed: {str(e)}")
         return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def get_customer_risk_details(request):
+    """
+    POST API endpoint to retrieve customer-level risk details by Center ID.
+    Expects plain JSON body:
+    {
+        "token": "...",
+        "center_id": 138245,
+        "as_on_date": "2026-06-08"  # Optional
+    }
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+        center_id_raw = data.get('center_id')
+        as_on_date = data.get('as_on_date')
+        print("data :",data)
+        print("token :",token)
+        print("center_id_raw :",center_id_raw)
+        print("as_on_date :",as_on_date)
+    except Exception as e:
+        log_error(f"get_customer_risk_details: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid or expired token'}, status=401)
+
+    if center_id_raw is None:
+        return JsonResponse({'success': False, 'message': 'center_id parameter is required'}, status=400)
+
+    try:
+        center_id = int(center_id_raw)
+    except ValueError:
+        return JsonResponse({'success': False, 'message': 'center_id must be a valid integer'}, status=400)
+
+    try:
+        with connection.cursor() as cursor:
+            db_date = as_on_date if as_on_date else None
+            cursor.execute("""
+                EXEC SP_GetCustomerRiskDetails @CenterID = %s, @AsOnDate = %s
+            """, [center_id, db_date])
+            columns = [col[0] for col in cursor.description] if cursor.description else []
+            rows = cursor.fetchall()
+
+        items = []
+        for row in rows:
+            row_dict = dict(zip(columns, row))
+            for key, val in row_dict.items():
+                if isinstance(val, decimal.Decimal):
+                    row_dict[key] = float(val)
+                elif hasattr(val, 'isoformat'):
+                    row_dict[key] = val.isoformat()
+            items.append(row_dict)
+
+        return JsonResponse({
+            'success': True,
+            'customer_risks': items
+        })
+
+    except Exception as e:
+        log_error(f"get_customer_risk_details: failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def get_center_disbursements(request):
+    """
+    POST API endpoint to retrieve center-level disbursements using SP_GetCenterOverview.
+    Expects plain JSON body:
+    {
+        "token": "...",
+        "center_id": 138245,
+        "as_on_date": "2026-06-08"  # Optional, defaults to '2026-06-08'
+    }
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+        center_id_raw = data.get('center_id')
+        as_on_date = data.get('as_on_date', '2026-06-08')
+    except Exception as e:
+        log_error(f"get_center_disbursements: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid or expired token'}, status=401)
+
+    if center_id_raw is None:
+        return JsonResponse({'success': False, 'message': 'center_id parameter is required'}, status=400)
+
+    try:
+        center_id = int(center_id_raw)
+    except ValueError:
+        return JsonResponse({'success': False, 'message': 'center_id must be a valid integer'}, status=400)
+
+    try:
+        with connection.cursor() as cursor:
+            db_date = as_on_date if as_on_date else '2026-06-08'
+            cursor.execute("""
+                EXEC SP_GetCenterOverview @CenterID = %s, @AsOnDate = %s, @ReportType = 'LAST_TO_CURRENT_DISBURSEMENTS'
+            """, [center_id, db_date])
+            columns = [col[0] for col in cursor.description] if cursor.description else []
+            rows = cursor.fetchall()
+
+        items = []
+        for row in rows:
+            row_dict = dict(zip(columns, row))
+            for key, val in row_dict.items():
+                if isinstance(val, decimal.Decimal):
+                    row_dict[key] = float(val)
+                elif hasattr(val, 'isoformat'):
+                    row_dict[key] = val.isoformat()
+            items.append(row_dict)
+
+        return JsonResponse({
+            'success': True,
+            'disbursements': items
+        })
+
+    except Exception as e:
+        log_error(f"get_center_disbursements: failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
