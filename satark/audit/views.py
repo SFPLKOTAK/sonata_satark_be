@@ -2404,3 +2404,235 @@ def archive_center_feedback_file(request):
         return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
 
 
+# ============================================================
+# CLIENT AUDIT FEEDBACK ENDPOINTS
+# ============================================================
+
+@csrf_exempt
+def get_client_audit_feedback(request):
+    """
+    POST API endpoint to retrieve saved checklist feedback for a client (customer).
+    Expects plain JSON body:
+    {
+        "token": "...",
+        "client_id": "CUST001",
+        "center_id": 456,
+        "audit_id": 123   -- optional
+    }
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+        client_id = data.get('client_id', '')
+        center_id_raw = data.get('center_id')
+        audit_id = data.get('audit_id')
+    except Exception as e:
+        log_error(f"get_client_audit_feedback: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid token'}, status=401)
+
+    if not client_id:
+        return JsonResponse({'success': False, 'message': 'client_id is required'}, status=400)
+
+    try:
+        center_id = int(center_id_raw) if center_id_raw is not None else None
+    except (ValueError, TypeError):
+        center_id = None
+
+    try:
+        query = """
+            SELECT
+                id, audit_id, branch_id, center_id,
+                client_id, client_name, auditor_id,
+                client_checklist_id, parameter_code, parameter_name,
+                answer, remarks, status,
+                created_at, updated_at
+            FROM dbo.audit_client_checklist_feedback
+            WHERE client_id = %s
+        """
+        params = [client_id]
+
+        if audit_id:
+            query += " AND audit_id = %s"
+            params.append(audit_id)
+        elif center_id is not None:
+            query += " AND center_id = %s"
+            params.append(center_id)
+
+        query += " ORDER BY client_checklist_id ASC"
+
+        with connection.cursor() as cursor:
+            cursor.execute(query, params)
+            columns = [col[0] for col in cursor.description]
+            rows = cursor.fetchall()
+
+        feedback_list = []
+        feedback_audit_id = audit_id
+        for row in rows:
+            row_dict = dict(zip(columns, row))
+            if row_dict.get('audit_id') and not feedback_audit_id:
+                feedback_audit_id = row_dict.get('audit_id')
+            for key, val in row_dict.items():
+                if isinstance(val, decimal.Decimal):
+                    row_dict[key] = float(val)
+                elif hasattr(val, 'isoformat'):
+                    row_dict[key] = val.isoformat()
+
+            feedback_list.append({
+                'checklistId': row_dict.get('client_checklist_id'),
+                'answer': row_dict.get('answer'),
+                'remarks': row_dict.get('remarks'),
+                'status': row_dict.get('status'),
+            })
+
+        return JsonResponse({
+            'success': True,
+            'feedback': feedback_list,
+            'auditId': feedback_audit_id
+        })
+    except Exception as e:
+        log_error(f"get_client_audit_feedback: DB error: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def save_client_audit_feedback(request):
+    """
+    POST API endpoint to save or submit checklist feedback for a client (customer).
+    Expects plain JSON body:
+    {
+        "token": "...",
+        "audit_id": 123,
+        "branch_id": "BRANCH_NAME",
+        "center_id": 456,
+        "client_id": "CUST001",
+        "client_name": "Ramabai Sharma",
+        "action": "SUBMITTED",   -- or "DRAFT_SAVED"
+        "feedback_items": [
+            {
+                "client_checklist_id": 1,
+                "parameter_code": "CLT_001",
+                "parameter_name": "House Verification...",
+                "answer": "Yes",
+                "remarks": "Verified at address"
+            }
+        ]
+    }
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+        audit_id = data.get('audit_id')
+        branch_id = data.get('branch_id', '')
+        center_id_raw = data.get('center_id')
+        client_id = data.get('client_id', '')
+        client_name = data.get('client_name', '')
+        action = data.get('action', 'DRAFT_SAVED')
+        feedback_items = data.get('feedback_items', [])
+    except Exception as e:
+        log_error(f"save_client_audit_feedback: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid token'}, status=401)
+
+    if not client_id:
+        return JsonResponse({'success': False, 'message': 'client_id is required'}, status=400)
+
+    try:
+        center_id = int(center_id_raw) if center_id_raw is not None else None
+    except (ValueError, TypeError):
+        center_id = None
+
+    # Determine status
+    status_to = 'pending'
+    if action == 'SUBMITTED':
+        status_to = 'submitted'
+    elif action == 'DRAFT_SAVED':
+        status_to = 'pending'
+
+    from django.db import transaction
+    try:
+        with transaction.atomic():
+            with connection.cursor() as cursor:
+                for item in feedback_items:
+                    checklist_id = item.get('client_checklist_id')
+                    parameter_code = item.get('parameter_code', '')
+                    parameter_name = item.get('parameter_name', '')
+                    answer = item.get('answer', 'N/A')
+                    remarks = item.get('remarks', '')
+
+                    # Check if record already exists
+                    if audit_id is not None:
+                        cursor.execute("""
+                            SELECT id
+                            FROM dbo.audit_client_checklist_feedback
+                            WHERE client_id = %s AND client_checklist_id = %s AND audit_id = %s
+                        """, [client_id, checklist_id, audit_id])
+                    else:
+                        cursor.execute("""
+                            SELECT id
+                            FROM dbo.audit_client_checklist_feedback
+                            WHERE client_id = %s AND client_checklist_id = %s AND audit_id IS NULL
+                        """, [client_id, checklist_id])
+                    existing = cursor.fetchone()
+
+                    if existing:
+                        cursor.execute("""
+                            UPDATE dbo.audit_client_checklist_feedback
+                            SET answer = %s,
+                                remarks = %s,
+                                status = %s,
+                                audit_id = %s,
+                                branch_id = %s,
+                                center_id = %s,
+                                client_name = %s,
+                                last_modified_by = %s,
+                                updated_at = GETDATE()
+                            WHERE id = %s
+                        """, [
+                            answer, remarks, status_to,
+                            audit_id, branch_id, center_id,
+                            client_name, user.UserID, existing[0]
+                        ])
+                    else:
+                        cursor.execute("""
+                            INSERT INTO dbo.audit_client_checklist_feedback (
+                                audit_id, branch_id, center_id,
+                                client_id, client_name, auditor_id,
+                                client_checklist_id, parameter_code, parameter_name,
+                                answer, remarks, status, last_modified_by,
+                                created_at, updated_at
+                            ) VALUES (
+                                %s, %s, %s,
+                                %s, %s, %s,
+                                %s, %s, %s,
+                                %s, %s, %s, %s,
+                                GETDATE(), GETDATE()
+                            )
+                        """, [
+                            audit_id, branch_id, center_id,
+                            client_id, client_name, user.UserID,
+                            checklist_id, parameter_code, parameter_name,
+                            answer, remarks, status_to, user.UserID
+                        ])
+
+        log_info(f"save_client_audit_feedback: saved {len(feedback_items)} items for client {client_id} by {user.UserCode}")
+        return JsonResponse({
+            'success': True,
+            'message': f'Client checklist feedback {action.lower()} successfully'
+        })
+    except Exception as e:
+        log_error(f"save_client_audit_feedback: failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+

@@ -6,7 +6,8 @@ from .views import (
     view_feedback_file, archive_feedback_file,
     get_center_risk_details, get_branch_overview, get_customer_risk_details, get_center_disbursements,
     get_center_audit_feedback, save_center_audit_feedback,
-    view_center_feedback_file, archive_center_feedback_file
+    view_center_feedback_file, archive_center_feedback_file,
+    get_client_audit_feedback, save_client_audit_feedback
 )
 
 urlpatterns = [
@@ -31,6 +32,10 @@ urlpatterns = [
     # Client Audit Checklist routes
     path('client-checklists/', get_client_checklist_points, name='get_client_checklist_points'),
     path('client-checklists/save/', save_client_checklist_point, name='save_client_checklist_point'),
+
+    # Client Audit Feedback routes
+    path('client-feedback/', get_client_audit_feedback, name='get_client_audit_feedback'),
+    path('client-feedback/save/', save_client_audit_feedback, name='save_client_audit_feedback'),
 
     # Center Risk Details route
     path('centers/risk-details/', get_center_risk_details, name='get_center_risk_details'),
