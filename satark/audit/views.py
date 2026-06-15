@@ -706,10 +706,10 @@ def get_audit_feedback(request):
                 r.confidential_remark,
                 fl.id as confidential_file_id, fl.file_name as confidential_file_name,
                 nf.id as normal_file_id, nf.file_name as normal_file_name
-            FROM dbo.audit_checklist_feedback f
-            LEFT JOIN dbo.audit_confidential_remarks r ON f.branch_id = r.branch_id AND f.checklist_id = r.checklist_id
-            LEFT JOIN dbo.audit_confidential_files fl ON f.branch_id = fl.branch_id AND f.checklist_id = fl.checklist_id AND fl.is_archived = 0
-            LEFT JOIN dbo.audit_normal_files nf ON f.branch_id = nf.branch_id AND f.checklist_id = nf.checklist_id AND nf.is_archived = 0
+            FROM dbo.audit_branch_checklist_feedback f
+            LEFT JOIN dbo.audit_branch_confidential_remarks r ON f.branch_id = r.branch_id AND f.checklist_id = r.checklist_id
+            LEFT JOIN dbo.audit_branch_confidential_files fl ON f.branch_id = fl.branch_id AND f.checklist_id = fl.checklist_id AND fl.is_archived = 0
+            LEFT JOIN dbo.audit_branch_normal_files nf ON f.branch_id = nf.branch_id AND f.checklist_id = nf.checklist_id AND nf.is_archived = 0
             WHERE f.branch_id = %s
         """
         params = [branch_id]
@@ -1242,7 +1242,7 @@ def save_audit_feedback(request):
                     # Check if record exists in main feedback table
                     cursor.execute("""
                         SELECT id, normal_file_path, is_confidential_file_present 
-                        FROM dbo.audit_checklist_feedback 
+                        FROM dbo.audit_branch_checklist_feedback 
                         WHERE branch_id = %s AND checklist_id = %s AND audit_id = %s
                     """, [branch_id, checklist_id, audit_id])
                     fb_row = cursor.fetchone()
@@ -1260,7 +1260,7 @@ def save_audit_feedback(request):
                         
                         # Update main feedback table
                         cursor.execute("""
-                            UPDATE dbo.audit_checklist_feedback
+                            UPDATE dbo.audit_branch_checklist_feedback
                             SET answer = %s,
                                 normal_remark = %s,
                                 normal_file_path = %s,
@@ -1275,7 +1275,7 @@ def save_audit_feedback(request):
                     else:
                         # Insert main feedback table
                         cursor.execute("""
-                            INSERT INTO dbo.audit_checklist_feedback (
+                            INSERT INTO dbo.audit_branch_checklist_feedback (
                                 audit_id, branch_id, auditor_id, checklist_id, section_code, section_name,
                                 intent_code, intent_title, answer, normal_remark, normal_file_path,
                                 is_confidential_remark_present, is_confidential_file_present, status, last_modified_by,
@@ -1294,14 +1294,14 @@ def save_audit_feedback(request):
                     if has_new_normal_file:
                         # Archive previous normal file
                         cursor.execute("""
-                            UPDATE dbo.audit_normal_files
+                            UPDATE dbo.audit_branch_normal_files
                             SET is_archived = 1, updated_at = GETDATE()
                             WHERE branch_id = %s AND checklist_id = %s AND is_archived = 0
                         """, [branch_id, checklist_id])
                         
                         # Insert new normal file
                         cursor.execute("""
-                            INSERT INTO dbo.audit_normal_files (
+                            INSERT INTO dbo.audit_branch_normal_files (
                                 feedback_id, branch_id, checklist_id, file_name, file_content, is_archived, uploaded_by, created_at, updated_at
                             ) VALUES (%s, %s, %s, %s, %s, 0, %s, GETDATE(), GETDATE())
                         """, [fb_id, branch_id, checklist_id, normal_file_name, normal_file_bytes, user.UserID])
@@ -1311,13 +1311,13 @@ def save_audit_feedback(request):
                     # Process confidential remark
                     if confidential_remark is not None:
                         cursor.execute("""
-                            SELECT id FROM dbo.audit_confidential_remarks
+                            SELECT id FROM dbo.audit_branch_confidential_remarks
                             WHERE branch_id = %s AND checklist_id = %s
                         """, [branch_id, checklist_id])
                         cr_row = cursor.fetchone()
                         if cr_row:
                             cursor.execute("""
-                                UPDATE dbo.audit_confidential_remarks
+                                UPDATE dbo.audit_branch_confidential_remarks
                                 SET confidential_remark = %s,
                                     user_id = %s,
                                     updated_at = GETDATE()
@@ -1325,7 +1325,7 @@ def save_audit_feedback(request):
                             """, [confidential_remark, user.UserID, cr_row[0]])
                         else:
                             cursor.execute("""
-                                INSERT INTO dbo.audit_confidential_remarks (
+                                INSERT INTO dbo.audit_branch_confidential_remarks (
                                     feedback_id, branch_id, checklist_id, confidential_remark, user_id, created_at, updated_at
                                 ) VALUES (%s, %s, %s, %s, %s, GETDATE(), GETDATE())
                             """, [fb_id, branch_id, checklist_id, confidential_remark, user.UserID])
@@ -1335,14 +1335,14 @@ def save_audit_feedback(request):
                     if has_new_confidential_file:
                         # Archive previous confidential file
                         cursor.execute("""
-                            UPDATE dbo.audit_confidential_files
+                            UPDATE dbo.audit_branch_confidential_files
                             SET is_archived = 1, updated_at = GETDATE()
                             WHERE branch_id = %s AND checklist_id = %s AND is_archived = 0
                         """, [branch_id, checklist_id])
                         
                         # Insert new confidential file
                         cursor.execute("""
-                            INSERT INTO dbo.audit_confidential_files (
+                            INSERT INTO dbo.audit_branch_confidential_files (
                                 feedback_id, branch_id, checklist_id, confidential_file_path, file_name, file_content, is_archived, user_id, created_at, updated_at
                             ) VALUES (%s, %s, %s, NULL, %s, %s, 0, %s, GETDATE(), GETDATE())
                         """, [fb_id, branch_id, checklist_id, confidential_file_name, confidential_file_bytes, user.UserID])
@@ -1408,9 +1408,9 @@ def view_feedback_file(request):
 
         with connection.cursor() as cursor:
             if file_type == 'normal':
-                cursor.execute("SELECT file_name, file_content FROM dbo.audit_normal_files WHERE id = %s", [file_id])
+                cursor.execute("SELECT file_name, file_content FROM dbo.audit_branch_normal_files WHERE id = %s", [file_id])
             else:
-                cursor.execute("SELECT file_name, file_content FROM dbo.audit_confidential_files WHERE id = %s", [file_id])
+                cursor.execute("SELECT file_name, file_content FROM dbo.audit_branch_confidential_files WHERE id = %s", [file_id])
             row = cursor.fetchone()
 
         if not row:
@@ -1477,25 +1477,25 @@ def archive_feedback_file(request):
         with connection.cursor() as cursor:
             if file_type == 'normal':
                 cursor.execute("""
-                    UPDATE dbo.audit_normal_files
+                    UPDATE dbo.audit_branch_normal_files
                     SET is_archived = 1, updated_at = GETDATE()
                     WHERE branch_id = %s AND checklist_id = %s AND is_archived = 0
                 """, [branch_id, checklist_id])
 
                 cursor.execute("""
-                    UPDATE dbo.audit_checklist_feedback
+                    UPDATE dbo.audit_branch_checklist_feedback
                     SET normal_file_path = NULL, updated_at = GETDATE()
                     WHERE branch_id = %s AND checklist_id = %s
                 """, [branch_id, checklist_id])
             else:
                 cursor.execute("""
-                    UPDATE dbo.audit_confidential_files
+                    UPDATE dbo.audit_branch_confidential_files
                     SET is_archived = 1, updated_at = GETDATE()
                     WHERE branch_id = %s AND checklist_id = %s AND is_archived = 0
                 """, [branch_id, checklist_id])
 
                 cursor.execute("""
-                    UPDATE dbo.audit_checklist_feedback
+                    UPDATE dbo.audit_branch_checklist_feedback
                     SET is_confidential_file_present = 0, updated_at = GETDATE()
                     WHERE branch_id = %s AND checklist_id = %s
                 """, [branch_id, checklist_id])
