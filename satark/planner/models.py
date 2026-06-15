@@ -3,6 +3,7 @@ from django.db import models
 class AuditPlanCurrent(models.Model):
     id = models.AutoField(primary_key=True)
     branch = models.CharField(max_length=255)
+    branch_id = models.IntegerField(null=True)
     division = models.CharField(max_length=255, null=True, blank=True)
     grade = models.CharField(max_length=50, null=True, blank=True)
     size = models.CharField(max_length=50, null=True, blank=True)
@@ -21,6 +22,7 @@ class AuditPlanCurrent(models.Model):
 class AuditPlanHistory(models.Model):
     id = models.AutoField(primary_key=True)
     branch = models.CharField(max_length=255)
+    branch_id = models.IntegerField(null=True)
     division = models.CharField(max_length=255, null=True, blank=True)
     grade = models.CharField(max_length=50, null=True, blank=True)
     size = models.CharField(max_length=50, null=True, blank=True)

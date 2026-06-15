@@ -162,6 +162,14 @@ def generate_audit_plan(request):
                 status=404,
             )
 
+        
+        division = ""
+        for i in range(0,1):
+            rd = dict(zip(columns, rows[0]))
+            # Column-name casing is DB-dependent; check all variants
+            division  = rd.get("Division")  or rd.get("DIVISION")  or rd.get("division")
+            
+
         for row in rows:
             rd = dict(zip(columns, row))
             # Column-name casing is DB-dependent; check all variants
@@ -172,7 +180,7 @@ def generate_audit_plan(request):
             branches.append({
                 "branch_id":   str(branch_id)   if branch_id   is not None else "",
                 "branch_name": str(branch_name) if branch_name is not None else "",
-                "risk_score":  int(risk_score)  if risk_score  is not None else 0,
+                "risk_score":  int(risk_score)  if risk_score  is not None else 0
             })
 
     except Exception as e:
@@ -224,6 +232,7 @@ def generate_audit_plan(request):
 
                         current_objects.append(AuditPlanCurrent(
                             branch=item.get("branch_name"),
+                            branch_id = item.get("branch_id"),
                             division=division,
                             grade=item.get("risk_grade"),
                             size=size,
@@ -238,6 +247,7 @@ def generate_audit_plan(request):
 
                         history_objects.append(AuditPlanHistory(
                             branch=item.get("branch_name"),
+                            branch_id = item.get("branch_id"),
                             division=division,
                             grade=item.get("risk_grade"),
                             size=size,
