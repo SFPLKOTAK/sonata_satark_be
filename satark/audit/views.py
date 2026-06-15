@@ -567,53 +567,21 @@ def get_assigned_audits(request):
         return JsonResponse({'success': False, 'message': 'Invalid token'}, status=401)
 
     try:
-        from planner.models import AuditPlanCurrent
-        import datetime
-        from django.db.models import Q
-
-        # Retrieve current plans assigned to the user
-        user_id_str = str(user.UserID) if user.UserID is not None else ""
-        user_code = user.UserCode or ""
-        
-        queryset = AuditPlanCurrent.objects.filter(
-            Q(assigned_auditor=user_id_str) | Q(assigned_auditor=user_code)
-        ).order_by('start_date', '-priority_score')
+        from django.db import connection
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                EXEC [dbo].[usp_ManageBranchAudit]
+                    @ReportType = 'assigned-audits',
+                    @UserCode = %s,
+                    @UserID = %s
+            """, [user.UserCode or "", user.UserID])
+            
+            columns = [col[0] for col in cursor.description]
+            rows = cursor.fetchall()
 
         audits = []
-        today = datetime.date.today()
-
-        for item in queryset:
-            start_date_str = item.start_date.strftime("%Y-%m-%d") if item.start_date else None
-            end_date_str = item.end_date.strftime("%Y-%m-%d") if item.end_date else None
-            
-            # Compute audit status dynamically based on current date
-            status = 'upcoming'
-            if item.start_date and item.end_date:
-                if today < item.start_date:
-                    status = 'upcoming'
-                elif item.start_date <= today <= item.end_date:
-                    status = 'today'
-                else:
-                    status = 'completed'
-
-            # Dynamic branch metrics simulation
-            p_score = item.priority_score or 0
-                    
-            audits.append({
-                "auditId": item.id,
-                "branchName": item.branch,
-                "division": item.division,
-                "region": item.division,
-                "grade": item.grade,
-                "size": item.size,
-                "auditMode": item.audit_mode,
-                "duration": item.duration,
-                "startDate": start_date_str,
-                "endDate": end_date_str,
-                "priorityScore": p_score,
-                "planMonth": item.plan_month,
-                "status": status,
-            })
+        for row in rows:
+            audits.append(dict(zip(columns, row)))
 
         # Calculate statistics
         total_assigned = len(audits)
@@ -631,6 +599,77 @@ def get_assigned_audits(request):
         })
     except Exception as e:
         log_error(f"get_assigned_audits: DB or processing error: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def start_branch_audit(request):
+    """
+    POST API endpoint to record audit progress starting in database.
+    Expects JSON body:
+    {
+        "token": "...",
+        "branch_id": 6944
+    }
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+        branch_id = data.get('branch_id')
+    except Exception as e:
+        log_error(f"start_branch_audit: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid token'}, status=401)
+
+    if not branch_id:
+        return JsonResponse({'success': False, 'message': 'branch_id is required'}, status=400)
+
+    try:
+        with connection.cursor() as cursor:
+            # 1. Look up plan details from audit_plan_current
+            cursor.execute("""
+                SELECT id, branch_id, start_date, end_date
+                FROM dbo.audit_plan_current
+                WHERE branch_id = %s OR id = %s
+            """, [branch_id, branch_id])
+            plan_row = cursor.fetchone()
+
+            if not plan_row:
+                return JsonResponse({'success': False, 'message': 'Matching audit plan not found for this branch'}, status=404)
+
+            audit_id, plan_branch_id, start_date, end_date = plan_row
+
+            # 2. Upsert into audit_branch_progress
+            cursor.execute("SELECT 1 FROM dbo.audit_branch_progress WHERE audit_id = %s", [audit_id])
+            exists = cursor.fetchone()
+
+            if exists:
+                cursor.execute("""
+                    UPDATE dbo.audit_branch_progress
+                    SET audit_status = 'in-progress',
+                        audit_assigned_to = %s
+                    WHERE audit_id = %s
+                """, [user.UserID, audit_id])
+            else:
+                cursor.execute("""
+                    INSERT INTO dbo.audit_branch_progress (
+                        audit_id, audit_branch_id, audit_start_date, audit_end_date, audit_status, audit_assigned_to
+                    ) VALUES (%s, %s, %s, %s, 'in-progress', %s)
+                """, [audit_id, plan_branch_id, start_date, end_date, user.UserID])
+
+        return JsonResponse({
+            'success': True,
+            'message': 'Audit progress started successfully',
+            'audit_id': audit_id
+        })
+    except Exception as e:
+        log_error(f"start_branch_audit: failed: {str(e)}")
         return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
 
 
@@ -674,7 +713,7 @@ def get_audit_feedback(request):
     try:
         data = json.loads(request.body) if request.body else {}
         token = data.get('token', '')
-        branch_id = data.get('branch_id', '')
+        branch_id = str(data.get('branch_id', '')).strip()
         audit_id = data.get('audit_id')
     except Exception as e:
         log_error(f"get_audit_feedback: parsing failed: {str(e)}")
@@ -687,6 +726,16 @@ def get_audit_feedback(request):
     if not branch_id:
         return JsonResponse({'success': False, 'message': 'branch_id is required'}, status=400)
 
+    # Ensure branch_id is numeric if name was passed
+    if branch_id:
+        from planner.models import AuditPlanCurrent
+        try:
+            int(branch_id)
+        except ValueError:
+            plan_obj = AuditPlanCurrent.objects.filter(branch=branch_id).first()
+            if plan_obj and plan_obj.branch_id:
+                branch_id = str(plan_obj.branch_id)
+
     try:
         # Resolve audit_id if not explicitly provided
         if not audit_id:
@@ -694,31 +743,32 @@ def get_audit_feedback(request):
             from planner.models import AuditPlanCurrent
             user_id_str = str(user.UserID) if user.UserID is not None else ""
             user_code = user.UserCode or ""
-            plan = AuditPlanCurrent.objects.filter(
-                Q(branch=branch_id) & (Q(assigned_auditor=user_id_str) | Q(assigned_auditor=user_code))
-            ).first()
+            
+            plan = None
+            try:
+                val_int = int(branch_id)
+                plan = AuditPlanCurrent.objects.filter(
+                    Q(branch_id=val_int) & (Q(assigned_auditor=user_id_str) | Q(assigned_auditor=user_code))
+                ).first()
+            except ValueError:
+                pass
+                
+            if not plan:
+                plan = AuditPlanCurrent.objects.filter(
+                    Q(branch=branch_id) & (Q(assigned_auditor=user_id_str) | Q(assigned_auditor=user_code))
+                ).first()
+                
             if plan:
                 audit_id = plan.id
 
-        query = """
-            SELECT 
-                f.audit_id, f.checklist_id, f.answer, f.normal_remark, f.status,
-                r.confidential_remark,
-                fl.id as confidential_file_id, fl.file_name as confidential_file_name,
-                nf.id as normal_file_id, nf.file_name as normal_file_name
-            FROM dbo.audit_branch_checklist_feedback f
-            LEFT JOIN dbo.audit_branch_confidential_remarks r ON f.branch_id = r.branch_id AND f.checklist_id = r.checklist_id
-            LEFT JOIN dbo.audit_branch_confidential_files fl ON f.branch_id = fl.branch_id AND f.checklist_id = fl.checklist_id AND fl.is_archived = 0
-            LEFT JOIN dbo.audit_branch_normal_files nf ON f.branch_id = nf.branch_id AND f.checklist_id = nf.checklist_id AND nf.is_archived = 0
-            WHERE f.branch_id = %s
-        """
-        params = [branch_id]
-        if audit_id:
-            query += " AND f.audit_id = %s"
-            params.append(audit_id)
-
         with connection.cursor() as cursor:
-            cursor.execute(query, params)
+            cursor.execute("""
+                EXEC [dbo].[usp_ManageBranchAudit]
+                    @ReportType = 'feedback',
+                    @BranchID = %s,
+                    @AuditID = %s
+            """, [branch_id, audit_id])
+            
             columns = [col[0] for col in cursor.description]
             rows = cursor.fetchall()
 
@@ -871,6 +921,7 @@ JPEG_QUALITY  = 88    # 88 is near-lossless for audit photos; was 20 (too blurry
 
 def _compress_image(file_bytes, filename):
     """Resize + JPEG re-encode. Returns (bytes, new_filename) or (None, filename) if no gain."""
+    # pyrefly: ignore [missing-import]
     from PIL import Image
 
     try:
@@ -944,6 +995,7 @@ def _compress_pdf_pikepdf(file_bytes):
     inp = out = None
     
     try:
+        # pyrefly: ignore [missing-import]
         import pikepdf
 
         with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as f:
@@ -976,8 +1028,10 @@ def _compress_pdf_pikepdf(file_bytes):
 def _compress_pdf_pypdf(file_bytes):
     """Re-compress PDF using pypdf. Returns bytes or None."""
     import io
+    # pyrefly: ignore [missing-import]
     from PIL import Image
     try:
+        # pyrefly: ignore [missing-import]
         from pypdf import PdfReader, PdfWriter
         
         reader = PdfReader(io.BytesIO(file_bytes))
@@ -1151,7 +1205,7 @@ def save_audit_feedback(request):
     try:
         data = json.loads(request.body) if request.body else {}
         token = data.get('token', '')
-        branch_id = data.get('branch_id', '')
+        branch_id = str(data.get('branch_id', '')).strip()
         audit_id = data.get('audit_id')
         action = data.get('action', 'DRAFT_SAVED')
         general_remarks = data.get('general_remarks', '')
@@ -1167,15 +1221,41 @@ def save_audit_feedback(request):
     if not branch_id:
         return JsonResponse({'success': False, 'message': 'branch_id is required'}, status=400)
 
+    # Ensure branch_id is numeric if name was passed
+    if branch_id:
+        from planner.models import AuditPlanCurrent
+        try:
+            int(branch_id)
+        except ValueError:
+            plan_obj = None
+            if audit_id and audit_id != 0:
+                plan_obj = AuditPlanCurrent.objects.filter(id=audit_id).first()
+            if not plan_obj:
+                plan_obj = AuditPlanCurrent.objects.filter(branch=branch_id).first()
+            if plan_obj and plan_obj.branch_id:
+                branch_id = str(plan_obj.branch_id)
+
     # Resolve audit_id if not explicitly provided
     if not audit_id:
         from django.db.models import Q
         from planner.models import AuditPlanCurrent
         user_id_str = str(user.UserID) if user.UserID is not None else ""
         user_code = user.UserCode or ""
-        plan = AuditPlanCurrent.objects.filter(
-            Q(branch=branch_id) & (Q(assigned_auditor=user_id_str) | Q(assigned_auditor=user_code))
-        ).first()
+        
+        plan = None
+        try:
+            val_int = int(branch_id)
+            plan = AuditPlanCurrent.objects.filter(
+                Q(branch_id=val_int) & (Q(assigned_auditor=user_id_str) | Q(assigned_auditor=user_code))
+            ).first()
+        except ValueError:
+            pass
+            
+        if not plan:
+            plan = AuditPlanCurrent.objects.filter(
+                Q(branch=branch_id) & (Q(assigned_auditor=user_id_str) | Q(assigned_auditor=user_code))
+            ).first()
+            
         if plan:
             audit_id = plan.id
         else:
@@ -1407,10 +1487,12 @@ def view_feedback_file(request):
         import mimetypes
 
         with connection.cursor() as cursor:
-            if file_type == 'normal':
-                cursor.execute("SELECT file_name, file_content FROM dbo.audit_branch_normal_files WHERE id = %s", [file_id])
-            else:
-                cursor.execute("SELECT file_name, file_content FROM dbo.audit_branch_confidential_files WHERE id = %s", [file_id])
+            cursor.execute("""
+                EXEC [dbo].[usp_ManageBranchAudit]
+                    @ReportType = 'view-file',
+                    @FileType = %s,
+                    @FileID = %s
+            """, [file_type, file_id])
             row = cursor.fetchone()
 
         if not row:
@@ -1462,7 +1544,7 @@ def archive_feedback_file(request):
         token = data.get('token', '')
         file_type = data.get('file_type', 'normal')
         checklist_id = data.get('checklist_id')
-        branch_id = data.get('branch_id', '')
+        branch_id = str(data.get('branch_id', '')).strip()
     except Exception as e:
         return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
 
@@ -1473,32 +1555,29 @@ def archive_feedback_file(request):
     if not checklist_id or not branch_id:
         return JsonResponse({'success': False, 'message': 'checklist_id and branch_id are required'}, status=400)
 
+    # Ensure branch_id is numeric if name was passed
+    if branch_id:
+        from planner.models import AuditPlanCurrent
+        try:
+            int(branch_id)
+        except ValueError:
+            plan_obj = AuditPlanCurrent.objects.filter(branch=branch_id).first()
+            if plan_obj and plan_obj.branch_id:
+                branch_id = str(plan_obj.branch_id)
+
     try:
         with connection.cursor() as cursor:
-            if file_type == 'normal':
-                cursor.execute("""
-                    UPDATE dbo.audit_branch_normal_files
-                    SET is_archived = 1, updated_at = GETDATE()
-                    WHERE branch_id = %s AND checklist_id = %s AND is_archived = 0
-                """, [branch_id, checklist_id])
-
-                cursor.execute("""
-                    UPDATE dbo.audit_branch_checklist_feedback
-                    SET normal_file_path = NULL, updated_at = GETDATE()
-                    WHERE branch_id = %s AND checklist_id = %s
-                """, [branch_id, checklist_id])
-            else:
-                cursor.execute("""
-                    UPDATE dbo.audit_branch_confidential_files
-                    SET is_archived = 1, updated_at = GETDATE()
-                    WHERE branch_id = %s AND checklist_id = %s AND is_archived = 0
-                """, [branch_id, checklist_id])
-
-                cursor.execute("""
-                    UPDATE dbo.audit_branch_checklist_feedback
-                    SET is_confidential_file_present = 0, updated_at = GETDATE()
-                    WHERE branch_id = %s AND checklist_id = %s
-                """, [branch_id, checklist_id])
+            cursor.execute("""
+                EXEC [dbo].[usp_ManageBranchAudit]
+                    @ReportType = 'archive-file',
+                    @FileType = %s,
+                    @BranchID = %s,
+                    @ChecklistID = %s
+            """, [file_type, branch_id, checklist_id])
+            
+            # Fetch output from execution to complete execution correctly
+            if cursor.description:
+                cursor.fetchall()
 
         return JsonResponse({
             'success': True,
@@ -1892,7 +1971,8 @@ def get_center_audit_feedback(request):
                 nf.id as normal_file_id, nf.file_name as normal_file_name,
                 ev.id as evidence_file_id, ev.file_name as evidence_file_name,
                 ev.latitude as evidence_latitude, ev.longitude as evidence_longitude,
-                ev.image_text as evidence_text
+                ev.image_text as evidence_text,
+                f.branchid
             FROM dbo.audit_center_checklist_feedback f
             LEFT JOIN dbo.audit_center_confidential_remarks r ON f.center_id = r.center_id AND f.center_checklist_id = r.center_checklist_id
             LEFT JOIN dbo.audit_center_confidential_files fl ON f.center_id = fl.center_id AND f.center_checklist_id = fl.center_checklist_id AND fl.is_archived = 0
@@ -1935,6 +2015,7 @@ def get_center_audit_feedback(request):
                 "normalRemark": row_dict.get("normal_remark"),
                 "status": row_dict.get("status"),
                 "confidentialRemark": row_dict.get("confidential_remark"),
+                "branchId": row_dict.get("branchid"),
                 "normalFile": {
                     "id": normal_file_id,
                     "filename": row_dict.get("normal_file_name")
@@ -1975,6 +2056,9 @@ def save_center_audit_feedback(request):
         token = data.get('token', '')
         center_id_raw = data.get('center_id')
         audit_id = data.get('audit_id')
+        branch_id = data.get('branch_id') or data.get('branchid')
+        if branch_id is not None:
+            branch_id = str(branch_id).strip()
         action = data.get('action', 'DRAFT_SAVED')
         general_remarks = data.get('general_remarks', '')
         feedback_items = data.get('feedback_items', [])
@@ -2020,6 +2104,18 @@ def save_center_audit_feedback(request):
                 audit_id = 0
         else:
             audit_id = 0
+
+    # Resolve branch_id if not explicitly provided
+    if not branch_id:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT TOP 1 BRANCHID 
+                FROM CenterRiskScore 
+                WHERE CenterID = %s OR CenterID = %s
+            """, [str(center_id), center_id])
+            row = cursor.fetchone()
+            if row:
+                branch_id = row[0]
 
     # Determine status to set
     status_to = 'pending'
@@ -2131,9 +2227,10 @@ def save_center_audit_feedback(request):
                                 status = %s,
                                 last_modified_by = %s,
                                 audit_id = %s,
+                                branchid = %s,
                                 updated_at = GETDATE()
                             WHERE id = %s
-                        """, [answer, normal_remark, final_normal_file_path, is_confidential_remark_present, is_confidential_file_present, status_to, user.UserID, audit_id, fb_id])
+                        """, [answer, normal_remark, final_normal_file_path, is_confidential_remark_present, is_confidential_file_present, status_to, user.UserID, audit_id, branch_id, fb_id])
                     else:
                         # Insert main feedback table
                         cursor.execute("""
@@ -2141,12 +2238,13 @@ def save_center_audit_feedback(request):
                                 audit_id, center_id, auditor_id, center_checklist_id, parameter_code, parameter_name,
                                 answer, normal_remark, normal_file_path,
                                 is_confidential_remark_present, is_confidential_file_present, status, last_modified_by,
-                                created_at, updated_at
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, GETDATE(), GETDATE())
+                                branchid, created_at, updated_at
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, GETDATE(), GETDATE())
                         """, [
                             audit_id, center_id, user.UserID, checklist_id, parameter_code, parameter_name,
                             answer, normal_remark, normal_file_name,
-                            is_confidential_remark_present, is_confidential_file_present, status_to, user.UserID
+                            is_confidential_remark_present, is_confidential_file_present, status_to, user.UserID,
+                            branch_id
                         ])
                         cursor.execute("SELECT @@IDENTITY")
                         fb_id = int(cursor.fetchone()[0])
@@ -2538,6 +2636,8 @@ def save_client_audit_feedback(request):
         client_name = data.get('client_name', '')
         action = data.get('action', 'DRAFT_SAVED')
         feedback_items = data.get('feedback_items', [])
+
+        print(branch_id, "this is the branch id")
     except Exception as e:
         log_error(f"save_client_audit_feedback: parsing failed: {str(e)}")
         return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
