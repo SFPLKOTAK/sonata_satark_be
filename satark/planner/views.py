@@ -253,7 +253,7 @@ def generate_audit_plan(request):
                             size=size,
                             audit_mode=audit_mode,
                             duration=item.get("audit_days"),
-                            assigned_auditor=item.get("auditor_name"),
+                            assigned_auditor=item.get("auditor_id"),
                             start_date=item.get("start_date"),
                             end_date=item.get("end_date"),
                             priority_score=r_score,
