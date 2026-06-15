@@ -100,3 +100,8 @@ STATIC_URL = 'static/'
 
 # CORS Configuration
 CORS_ALLOW_ALL_ORIGINS = True
+
+# Increase maximum request and file upload size (e.g. for large media file feedback uploads)
+DATA_UPLOAD_MAX_MEMORY_SIZE = 104857600  # 100 MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 104857600  # 100 MB
+

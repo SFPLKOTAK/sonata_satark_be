@@ -3,7 +3,10 @@ from .views import (
     get_checklist_points, create_checklist_point, get_report_types, get_assigned_audits, get_audit_feedback, save_audit_feedback,
     get_center_checklist_points, save_center_checklist_point,
     get_client_checklist_points, save_client_checklist_point,
-    get_center_risk_details, get_branch_overview, get_customer_risk_details, get_center_disbursements
+    view_feedback_file, archive_feedback_file,
+    get_center_risk_details, get_branch_overview, get_customer_risk_details, get_center_disbursements,
+    get_center_audit_feedback, save_center_audit_feedback,
+    view_center_feedback_file, archive_center_feedback_file
 )
 
 urlpatterns = [
@@ -14,10 +17,16 @@ urlpatterns = [
     path('assigned-audits/', get_assigned_audits, name='get_assigned_audits'),
     path('feedback/', get_audit_feedback, name='get_audit_feedback'),
     path('feedback/save/', save_audit_feedback, name='save_audit_feedback'),
+    path('feedback/file/view/', view_feedback_file, name='view_feedback_file'),
+    path('feedback/file/archive/', archive_feedback_file, name='archive_feedback_file'),
 
     # Center Audit Checklist routes
     path('center-checklists/', get_center_checklist_points, name='get_center_checklist_points'),
     path('center-checklists/save/', save_center_checklist_point, name='save_center_checklist_point'),
+    path('center-feedback/', get_center_audit_feedback, name='get_center_audit_feedback'),
+    path('center-feedback/save/', save_center_audit_feedback, name='save_center_audit_feedback'),
+    path('center-feedback/file/view/', view_center_feedback_file, name='view_center_feedback_file'),
+    path('center-feedback/file/archive/', archive_center_feedback_file, name='archive_center_feedback_file'),
 
     # Client Audit Checklist routes
     path('client-checklists/', get_client_checklist_points, name='get_client_checklist_points'),
@@ -35,5 +44,6 @@ urlpatterns = [
     # Branch Overview route
     path('branch/overview/', get_branch_overview, name='get_branch_overview'),
 ]
+
 
 

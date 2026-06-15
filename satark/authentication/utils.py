@@ -11,10 +11,16 @@ load_dotenv(BASE_DIR / '.env', override=True)
 logger = logging.getLogger('satark_auth')
 logger.setLevel(logging.INFO)
 
-log_dir = os.path.dirname(os.path.abspath(__file__))
-log_file = os.path.join(log_dir, 'auth.log')
+# --- UPDATED PATH ---
+# Define the specific directory where you want the logs to go
+log_dir = r"C:\Users\morev\sonata_satark_be\satark\logs"
+log_file = os.path.join(log_dir, 'satark.log') # Named the file 'satark.log'
 
 try:
+    # Automatically create the directory if it doesn't exist yet
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+
     file_handler = logging.FileHandler(log_file, encoding='utf-8')
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     file_handler.setFormatter(formatter)
