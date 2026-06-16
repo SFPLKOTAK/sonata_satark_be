@@ -2733,9 +2733,259 @@ def save_client_audit_feedback(request):
             'message': f'Client checklist feedback {action.lower()} successfully'
         })
     except Exception as e:
-        log_error(f"save_client_audit_feedback: Exception: {str(e)}")
-        return send_encrypted_response({'success': False, 'message': 'Internal Server Error'}, status_code=500)
+        log_error(f"save_client_audit_feedback: failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
 
+
+@csrf_exempt
+def get_completed_audits(request):
+    """
+    POST API to fetch all completed audits for the logged-in auditor.
+    An audit is completed if audit_end_date is not null.
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': f'Invalid request: {str(e)}'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid or expired token'}, status=401)
+
+    try:
+        with connection.cursor() as cursor:
+            # Query completed audits assigned to user
+            query = """
+                SELECT 
+                    p.audit_id, 
+                    p.audit_branch_id, 
+                    p.audit_start_date, 
+                    p.audit_end_date, 
+                    p.audit_status, 
+                    b.Branch,
+                    b.Zone,
+                    b.Division,
+                    b.Region,
+                    b.Hub
+                FROM dbo.audit_branch_progress p
+                LEFT JOIN dbo.VW_Branch_To_GeographicalHierarchy b ON p.audit_branch_id = b.BranchID
+                WHERE p.audit_assigned_to = %s AND p.audit_end_date IS NOT NULL
+                ORDER BY p.audit_end_date DESC
+            """
+            cursor.execute(query, [user.UserID])
+            rows = cursor.fetchall()
+
+            completed_list = []
+            for row in rows:
+                audit_id = row[0]
+                branch_id = row[1]
+                start_date = row[2]
+                end_date = row[3]
+                status = row[4]
+                branch_name = row[5] or f"Branch {branch_id}"
+                zone = row[6]
+                division = row[7]
+                region = row[8]
+                hub = row[9]
+
+                # Fetch final summary for scores
+                cursor.execute("""
+                    SELECT total_max_score, total_score_obtained, final_score_pct
+                    FROM dbo.audit_branch_final_summary
+                    WHERE audit_id = %s
+                """, [audit_id])
+                sum_row = cursor.fetchone()
+
+                total_max = 0
+                total_obtained = 0
+                score_pct = 0.0
+
+                if sum_row:
+                    total_max = float(sum_row[0]) if sum_row[0] is not None else 0.0
+                    total_obtained = float(sum_row[1]) if sum_row[1] is not None else 0.0
+                    score_pct = float(sum_row[2]) if sum_row[2] is not None else 0.0
+
+                # Compute Grade
+                if score_pct > 80.0:
+                    grade = 'A'
+                elif score_pct >= 60.0:
+                    grade = 'B'
+                elif score_pct >= 40.0:
+                    grade = 'C'
+                else:
+                    grade = 'D'
+
+                completed_list.append({
+                    'audit_id': audit_id,
+                    'branch_id': branch_id,
+                    'branch_name': branch_name,
+                    'start_date': start_date.strftime('%Y-%m-%d') if start_date else None,
+                    'end_date': end_date.strftime('%Y-%m-%d') if end_date else None,
+                    'status': status,
+                    'zone': zone,
+                    'division': division,
+                    'region': region,
+                    'hub': hub,
+                    'total_max_score': total_max,
+                    'total_score_obtained': total_obtained,
+                    'score_pct': round(score_pct, 2),
+                    'grade': grade
+                })
+
+        return JsonResponse({'success': True, 'audits': completed_list})
+    except Exception as e:
+        log_error(f"get_completed_audits failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def get_branch_report_details(request):
+    """
+    POST API to fetch detailed report data for a completed branch audit.
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+        audit_id = data.get('audit_id')
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': f'Invalid request: {str(e)}'}, status=400)
+
+    if not audit_id:
+        return JsonResponse({'success': False, 'message': 'audit_id is required'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid or expired token'}, status=401)
+
+    try:
+        with connection.cursor() as cursor:
+            # 1. Fetch audit metadata & branch geo
+            cursor.execute("""
+                SELECT 
+                    p.audit_id, 
+                    p.audit_branch_id, 
+                    p.audit_start_date, 
+                    p.audit_end_date, 
+                    p.audit_status, 
+                    b.Branch, b.Zone, b.Division, b.Region, b.Hub,
+                    u.UserName
+                FROM dbo.audit_branch_progress p
+                LEFT JOIN dbo.VW_Branch_To_GeographicalHierarchy b ON p.audit_branch_id = b.BranchID
+                LEFT JOIN dbo.accounts_mst_usertbl u ON p.audit_assigned_to = u.UserID
+                WHERE p.audit_id = %s
+            """, [audit_id])
+            meta_row = cursor.fetchone()
+
+            if not meta_row:
+                return JsonResponse({'success': False, 'message': 'Audit progress record not found'}, status=404)
+
+            audit_meta = {
+                'audit_id': meta_row[0],
+                'branch_id': meta_row[1],
+                'start_date': meta_row[2].strftime('%Y-%m-%d') if meta_row[2] else None,
+                'end_date': meta_row[3].strftime('%Y-%m-%d') if meta_row[3] else None,
+                'status': meta_row[4],
+                'branch_name': meta_row[5],
+                'zone': meta_row[6],
+                'division': meta_row[7],
+                'region': meta_row[8],
+                'hub': meta_row[9],
+                'auditor_name': meta_row[10]
+            }
+
+            # 2. Fetch final summary scores
+            cursor.execute("""
+                SELECT 
+                    branch_max_score_final, branch_score_obtained,
+                    center_count, center_max_score_final, center_score_obtained,
+                    client_count, client_max_score_final, client_score_obtained,
+                    total_max_score, total_score_obtained, final_score_pct
+                FROM dbo.audit_branch_final_summary
+                WHERE audit_id = %s
+            """, [audit_id])
+            summary_row = cursor.fetchone()
+
+            scores = {}
+            if summary_row:
+                scores = {
+                    'branch_max_score_final': float(summary_row[0]) if summary_row[0] is not None else 0.0,
+                    'branch_score_obtained': float(summary_row[1]) if summary_row[1] is not None else 0.0,
+                    'center_count': int(summary_row[2]) if summary_row[2] is not None else 0,
+                    'center_max_score_final': float(summary_row[3]) if summary_row[3] is not None else 0.0,
+                    'center_score_obtained': float(summary_row[4]) if summary_row[4] is not None else 0.0,
+                    'client_count': int(summary_row[5]) if summary_row[5] is not None else 0,
+                    'client_max_score_final': float(summary_row[6]) if summary_row[6] is not None else 0.0,
+                    'client_score_obtained': float(summary_row[7]) if summary_row[7] is not None else 0.0,
+                    'total_max_score': float(summary_row[8]) if summary_row[8] is not None else 0.0,
+                    'total_score_obtained': float(summary_row[9]) if summary_row[9] is not None else 0.0,
+                    'final_score_pct': float(summary_row[10]) if summary_row[10] is not None else 0.0,
+                }
+                pct = scores['final_score_pct']
+                if pct > 80.0:
+                    scores['grade'] = 'A'
+                elif pct >= 60.0:
+                    scores['grade'] = 'B'
+                elif pct >= 40.0:
+                    scores['grade'] = 'C'
+                else:
+                    scores['grade'] = 'D'
+            else:
+                scores = {
+                    'branch_max_score_final': 0.0, 'branch_score_obtained': 0.0,
+                    'center_count': 0, 'center_max_score_final': 0.0, 'center_score_obtained': 0.0,
+                    'client_count': 0, 'client_max_score_final': 0.0, 'client_score_obtained': 0.0,
+                    'total_max_score': 0.0, 'total_score_obtained': 0.0, 'final_score_pct': 0.0,
+                    'grade': 'N/A'
+                }
+
+            # 3. Fetch branch checklist scores
+            cursor.execute("""
+                SELECT section_code, section_name, intent_code, intent_title, answer, max_score, score_obtained
+                FROM dbo.audit_branch_checklist_score
+                WHERE audit_id = %s
+                ORDER BY section_code, intent_code
+            """, [audit_id])
+            branch_cols = [d[0] for d in cursor.description]
+            branch_scores = [dict(zip(branch_cols, r)) for r in cursor.fetchall()]
+
+            # 4. Fetch center checklist scores
+            cursor.execute("""
+                SELECT center_id, parameter_code, parameter_name, answer, max_score, score_obtained
+                FROM dbo.audit_center_checklist_score
+                WHERE audit_id = %s
+                ORDER BY center_id, parameter_code
+            """, [audit_id])
+            center_cols = [d[0] for d in cursor.description]
+            center_scores = [dict(zip(center_cols, r)) for r in cursor.fetchall()]
+
+            # 5. Fetch client checklist scores
+            cursor.execute("""
+                SELECT center_id, client_id, client_name, parameter_code, parameter_name, answer, max_score, score_obtained
+                FROM dbo.audit_client_checklist_score
+                WHERE audit_id = %s
+                ORDER BY center_id, client_id, parameter_code
+            """, [audit_id])
+            client_cols = [d[0] for d in cursor.description]
+            client_scores = [dict(zip(client_cols, r)) for r in cursor.fetchall()]
+
+        return JsonResponse({
+            'success': True,
+            'metadata': audit_meta,
+            'scores': scores,
+            'branch_details': branch_scores,
+            'center_details': center_scores,
+            'client_details': client_scores
+        })
+    except Exception as e:
+        log_error(f"get_branch_report_details failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
 
 @csrf_exempt
 def get_auditor_dashboard(request):
@@ -2789,3 +3039,4 @@ def get_auditor_dashboard(request):
     except Exception as e:
         log_error(f"get_auditor_dashboard: SP execution error: {str(e)}")
         return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+

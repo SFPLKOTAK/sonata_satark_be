@@ -8,6 +8,7 @@ from .views import (
     get_center_audit_feedback, save_center_audit_feedback,
     view_center_feedback_file, archive_center_feedback_file,
     get_client_audit_feedback, save_client_audit_feedback,
+    get_completed_audits, get_branch_report_details,
     get_auditor_dashboard
 )
 
@@ -51,6 +52,10 @@ urlpatterns = [
 
     # Branch Overview route
     path('branch/overview/', get_branch_overview, name='get_branch_overview'),
+
+    # Combined Reports routes
+    path('completed-audits/', get_completed_audits, name='get_completed_audits'),
+    path('branch-report/details/', get_branch_report_details, name='get_branch_report_details'),
 ]
 
 
