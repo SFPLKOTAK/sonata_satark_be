@@ -305,6 +305,43 @@ def get_current_plan(request):
     division = request.GET.get("division")
     plan_month = request.GET.get("plan_month")
 
+    # Extract user from token
+    auth_header = request.META.get('HTTP_AUTHORIZATION', '')
+    token = ''
+    if auth_header.startswith('Bearer '):
+        token = auth_header.split(' ')[1]
+
+    user_id = None
+    role_id = None
+    if token:
+        import jwt
+        from django.conf import settings
+        try:
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=['HS256'])
+            pk_id = payload.get('user_id')
+            
+            # Fetch actual UserID from accounts_mst_usertbl
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT UserID FROM [dbo].[accounts_mst_usertbl] WHERE id = %s
+                """, [pk_id])
+                u_row = cursor.fetchone()
+                if u_row:
+                    actual_user_id = str(u_row[0])
+                    user_id = actual_user_id
+                    
+                    # Fetch user role using the actual UserID
+                    cursor.execute("""
+                        SELECT RoleId
+                        FROM [dbo].[map_userRole]
+                        WHERE UserID = %s AND IsActive = 1
+                    """, [actual_user_id])
+                    row = cursor.fetchone()
+                    if row:
+                        role_id = row[0]
+        except Exception as e:
+            logger.error(f"Token validation failed in get_current_plan: {e}")
+
     # Fetch auditors
     auditors_list = []
     auditor_map = {}
@@ -342,13 +379,14 @@ def get_current_plan(request):
 
     queryset = AuditPlanCurrent.objects.all()
     if division:
-        # If division is 'All Divisions' or empty, we don't filter.
-        # But wait! In frontend it passes 'Lucknow Division' for 'All Divisions' or the actual division.
-        # Let's match whatever is passed. If division is 'All Divisions', we don't filter.
         if division != 'All Divisions':
             queryset = queryset.filter(division=division)
     if plan_month:
         queryset = queryset.filter(plan_month=plan_month)
+
+    # Backend filtering for Auditor Role (RoleId = 4)
+    if role_id == 4 and user_id:
+        queryset = queryset.filter(assigned_auditor=user_id)
 
     queryset = queryset.order_by('start_date', '-priority_score')
 

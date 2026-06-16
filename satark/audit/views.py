@@ -2733,6 +2733,59 @@ def save_client_audit_feedback(request):
             'message': f'Client checklist feedback {action.lower()} successfully'
         })
     except Exception as e:
-        log_error(f"save_client_audit_feedback: failed: {str(e)}")
-        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+        log_error(f"save_client_audit_feedback: Exception: {str(e)}")
+        return send_encrypted_response({'success': False, 'message': 'Internal Server Error'}, status_code=500)
 
+
+@csrf_exempt
+def get_auditor_dashboard(request):
+    """
+    POST API endpoint to retrieve the auditor dashboard data.
+    Calls `Sp_auditor_dashboard` with `@UserID`.
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+    except Exception as e:
+        log_error(f"get_auditor_dashboard: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid or expired token'}, status=401)
+    
+    user_id = str(user.UserID)
+
+    try:
+        with connection.cursor() as cursor:
+            # 1. My Audits
+            cursor.execute("EXEC [dbo].[Sp_auditor_dashboard] @UserID = %s", [user_id])
+            
+            audits_columns = [col[0] for col in cursor.description]
+            audits_rows = cursor.fetchall()
+            audits = [dict(zip(audits_columns, row)) for row in audits_rows]
+
+            # 2. Today's Plan
+            cursor.nextset()
+            todays_plan_columns = [col[0] for col in cursor.description]
+            todays_plan_rows = cursor.fetchall()
+            todays_plan = [dict(zip(todays_plan_columns, row)) for row in todays_plan_rows]
+
+            # 3. CAPs
+            cursor.nextset()
+            caps_columns = [col[0] for col in cursor.description]
+            caps_rows = cursor.fetchall()
+            caps = [dict(zip(caps_columns, row)) for row in caps_rows]
+
+        return JsonResponse({
+            'success': True,
+            'audits': audits,
+            'todaysPlan': todays_plan,
+            'caps': caps
+        })
+    except Exception as e:
+        log_error(f"get_auditor_dashboard: SP execution error: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)

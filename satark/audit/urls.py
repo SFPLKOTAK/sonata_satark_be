@@ -7,10 +7,12 @@ from .views import (
     get_center_risk_details, get_branch_overview, get_customer_risk_details, get_center_disbursements,
     get_center_audit_feedback, save_center_audit_feedback,
     view_center_feedback_file, archive_center_feedback_file,
-    get_client_audit_feedback, save_client_audit_feedback
+    get_client_audit_feedback, save_client_audit_feedback,
+    get_auditor_dashboard
 )
 
 urlpatterns = [
+    path('auditor-dashboard/', get_auditor_dashboard, name='get_auditor_dashboard'),
     # Branch Audit Checklist routes
     path('checklists/', get_checklist_points, name='get_checklist_points'),
     path('checklists/create/', create_checklist_point, name='create_checklist_point'),
