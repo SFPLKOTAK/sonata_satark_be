@@ -4445,6 +4445,9 @@ def get_auditee_audits(request):
 
     branch_id = int(user.BranchID) if user.BranchID else 0
     buid = int(user.Buid) if user.Buid else 0
+    print("branch_id", branch_id)
+    print("buid", buid)
+
     if not branch_id and not buid:
         return JsonResponse({'success': False, 'message': 'User is not assigned to a branch or hierarchy unit'}, status=400)
 
@@ -4475,7 +4478,7 @@ def get_auditee_audits(request):
                 LEFT JOIN dbo.accounts_mst_usertbl u ON p.audit_assigned_to = u.UserID
                 LEFT JOIN dbo.audit_plan_current c ON p.audit_id = c.id
                 LEFT JOIN dbo.audit_branch_score_summary s ON p.audit_id = s.audit_id
-                WHERE p.audit_status = 'completed' or audit_status='reverted' or audit_status='submitted' AND p.audit_branch_id in ({placeholders})
+                WHERE (p.audit_status = 'completed' or audit_status='reverted' or audit_status='submitted') AND p.audit_branch_id in ({placeholders})
                 ORDER BY p.audit_end_date DESC
             """
             cursor.execute(query, branch_ids)
