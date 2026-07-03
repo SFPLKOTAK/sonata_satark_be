@@ -1,0 +1,15 @@
+name: Auto-Pull on Server
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  pull-code:
+    runs-on: self-hosted
+    steps:
+      - name: Git Pull on Server
+        run: |
+          cd C:\inetpub\wwwroot\sonata_satark_be
+          git pull origin main
