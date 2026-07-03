@@ -1,5 +1,5 @@
 #  no test
-# ronaldo is the real goat suiiiiiiiiiiiii.
+# ronaldo is the real bakri meeeeeeeeeeee.
 
 from django.urls import path, include
 
