@@ -572,9 +572,8 @@ def get_assigned_audits(request):
             cursor.execute("""
                 EXEC [dbo].[usp_ManageBranchAudit]
                     @ReportType = 'assigned-audits',
-                    @UserCode = %s,
                     @UserID = %s
-            """, [user.UserCode or "", user.UserID])
+            """, [user.UserID])
             
             columns = [col[0] for col in cursor.description]
             rows = cursor.fetchall()
@@ -583,14 +582,39 @@ def get_assigned_audits(request):
         for row in rows:
             audits.append(dict(zip(columns, row)))
 
+        # Fetch selected centers for these audits
+        audit_ids = [a['auditId'] for a in audits if a.get('auditId')]
+        selected_centers_map = {}
+        if audit_ids:
+            with connection.cursor() as cursor_centers:
+                placeholders = ', '.join(['%s'] * len(audit_ids))
+                cursor_centers.execute(f"""
+                    SELECT audit_id, center_id, center_name 
+                    FROM dbo.audit_branch_selected_centers
+                    WHERE audit_id IN ({placeholders})
+                """, audit_ids)
+                for center_row in cursor_centers.fetchall():
+                    aid, cid, cname = center_row
+                    if aid not in selected_centers_map:
+                        selected_centers_map[aid] = []
+                    selected_centers_map[aid].append({
+                        'centerId': cid,
+                        'centerName': cname
+                    })
+
+        for a in audits:
+            a['selectedCenters'] = selected_centers_map.get(a['auditId'], [])
+
         # Calculate statistics
         total_assigned = len(audits)
         completed_count = sum(1 for a in audits if a['status'] == 'completed')
-        completion_pct = int(completed_count / total_assigned * 100) if total_assigned > 0 else 0        
+        in_progress_count = sum(1 for a in audits if a.get('isStarted') and a['status'] != 'completed')
+        completion_pct = int(completed_count / total_assigned * 100) if total_assigned > 0 else 0
         stats = {
-            "branchesThisMonth": total_assigned,
+            "branchesThisMonth": completed_count,
             "branchesTarget": total_assigned,
-            "completionPct": completion_pct
+            "completionPct": completion_pct,
+            "inProgressCount": in_progress_count
         }
         return JsonResponse({
             'success': True,
@@ -660,8 +684,8 @@ def start_branch_audit(request):
                 cursor.execute("""
                     INSERT INTO dbo.audit_branch_progress (
                         audit_id, audit_branch_id, audit_start_date, audit_end_date, audit_status, audit_assigned_to
-                    ) VALUES (%s, %s, %s, %s, 'in-progress', %s)
-                """, [audit_id, plan_branch_id, start_date, end_date, user.UserID])
+                    ) VALUES (%s, %s, %s, NULL, 'in-progress', %s)
+                """, [audit_id, plan_branch_id, start_date, user.UserID])
 
         return JsonResponse({
             'success': True,
@@ -670,6 +694,85 @@ def start_branch_audit(request):
         })
     except Exception as e:
         log_error(f"start_branch_audit: failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def end_branch_audit(request):
+    """
+    POST API to mark an audit as completed.
+    Sets audit_end_date = today, audit_status = 'submitted' in audit_branch_progress,
+    then calls usp_PopulateAuditChecklistScores to calculate all scores.
+    Expects JSON body: { "token": "...", "audit_id": 71 }
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+        audit_id = data.get('audit_id')
+    except Exception as e:
+        log_error(f"end_branch_audit: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid token'}, status=401)
+
+    if not audit_id:
+        return JsonResponse({'success': False, 'message': 'audit_id is required'}, status=400)
+
+    try:
+        with connection.cursor() as cursor:
+            # 1. Verify the audit belongs to this user
+            cursor.execute("""
+                SELECT audit_id FROM dbo.audit_branch_progress
+                WHERE audit_id = %s AND audit_assigned_to = %s
+            """, [audit_id, user.UserID])
+            progress_row = cursor.fetchone()
+
+            if not progress_row:
+                return JsonResponse({'success': False, 'message': 'Audit progress record not found for this user'}, status=404)
+
+            # 2. Set audit_end_date to today and mark status as submitted
+            cursor.execute("""
+                UPDATE dbo.audit_branch_progress
+                SET audit_end_date = CAST(GETDATE() AS DATE),
+                    audit_status = 'submitted'
+                WHERE audit_id = %s AND audit_assigned_to = %s
+            """, [audit_id, user.UserID])
+
+            # 3. Run score population stored procedure
+            score_error = None
+            try:
+                cursor.execute("""
+                    SELECT MAX(audit_end_date) FROM dbo.audit_branch_progress 
+                    WHERE audit_id = %s
+                """, [audit_id])
+                row = cursor.fetchone()
+                as_on_date = row[0] if row and row[0] else None
+
+                cursor.execute("EXEC dbo.usp_PopulateAuditChecklistScores @AsOnDate = %s", [as_on_date])
+            except Exception as sp_err:
+                log_error(f"end_branch_audit: usp_PopulateAuditChecklistScores failed: {str(sp_err)}")
+                score_error = str(sp_err)
+
+        if score_error:
+            return JsonResponse({
+                'success': True,
+                'message': 'Audit ended successfully but score calculation had an error.',
+                'audit_id': audit_id,
+                'score_error': score_error
+            })
+
+        return JsonResponse({
+            'success': True,
+            'message': 'Audit ended successfully. Scores have been calculated.',
+            'audit_id': audit_id
+        })
+    except Exception as e:
+        log_error(f"end_branch_audit: failed: {str(e)}")
         return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
 
 
@@ -2738,6 +2841,72 @@ def save_client_audit_feedback(request):
 
 
 @csrf_exempt
+def get_auditor_caps(request):
+    """
+    POST API to fetch all Corrective Action Points (CAPs) for the logged-in auditor.
+    CAPs = all 'Yes' answers from branch, center, and client checklist feedback for a given month.
+    Expects JSON body:
+    {
+        "token": "...",
+        "month_start_date": "2026-06-01"   (optional, defaults to current month)
+    }
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+        month_start_date = data.get('month_start_date', None)
+        report_type = data.get('report_type', 'CAP')
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': f'Invalid request: {str(e)}'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid or expired token'}, status=401)
+
+    try:
+        with connection.cursor() as cursor:
+            if month_start_date:
+                cursor.execute("""
+                    EXEC dbo.usp_ManageAuditCAPs
+                        @ReportType = %s,
+                        @UserID = %s,
+                        @MonthStartDate = %s
+                """, [report_type, user.UserID, month_start_date])
+            else:
+                cursor.execute("""
+                    EXEC dbo.usp_ManageAuditCAPs
+                        @ReportType = %s,
+                        @UserID = %s
+                """, [report_type, user.UserID])
+
+            columns = [col[0] for col in cursor.description]
+            rows = cursor.fetchall()
+
+        caps = []
+        import decimal
+        for row in rows:
+            cap = dict(zip(columns, row))
+            for k, v in cap.items():
+                if isinstance(v, decimal.Decimal):
+                    cap[k] = float(v)
+                elif hasattr(v, 'isoformat'):
+                    cap[k] = v.isoformat()
+            caps.append(cap)
+
+        return JsonResponse({
+            'success': True,
+            'caps': caps,
+            'total_caps': len(caps)
+        })
+    except Exception as e:
+        log_error(f"get_auditor_caps failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
 def get_completed_audits(request):
     """
     POST API to fetch all completed audits for the logged-in auditor.
@@ -2758,8 +2927,28 @@ def get_completed_audits(request):
 
     try:
         with connection.cursor() as cursor:
-            # Query completed audits assigned to user
+            # Query completed audits assigned to user, including subordinates if division/zonal head
             query = """
+                SET NOCOUNT ON;
+                DROP TABLE IF EXISTS #UserList;
+                CREATE TABLE #UserList
+                (
+                    UserID   VARCHAR(255),
+                    UserName NVARCHAR(255)
+                );
+
+                INSERT INTO #UserList (UserID, UserName)
+                SELECT DISTINCT CAST(fa_userid AS VARCHAR(255)), fa_username
+                FROM dbo.VW_Branch_To_GeographicalHierarchy_head_audit
+                WHERE (division_head_userid = %s OR zonal_userid = %s)
+                  AND fa_userid IS NOT NULL;
+         
+                INSERT INTO #UserList (UserID, UserName)
+                SELECT CAST(%s AS VARCHAR(255)), amt.UserName
+                FROM dbo.accounts_mst_usertbl amt
+                WHERE amt.UserID = %s
+                  AND NOT EXISTS (SELECT 1 FROM #UserList WHERE UserID = CAST(%s AS VARCHAR(255)));
+
                 SELECT 
                     p.audit_id, 
                     p.audit_branch_id, 
@@ -2773,10 +2962,11 @@ def get_completed_audits(request):
                     b.Hub
                 FROM dbo.audit_branch_progress p
                 LEFT JOIN dbo.VW_Branch_To_GeographicalHierarchy b ON p.audit_branch_id = b.BranchID
-                WHERE p.audit_assigned_to = %s AND p.audit_end_date IS NOT NULL
-                ORDER BY p.audit_end_date DESC
+                WHERE p.audit_assigned_to IN (SELECT UserID FROM #UserList)
+                  AND p.audit_end_date IS NOT NULL
+                ORDER BY p.audit_end_date DESC;
             """
-            cursor.execute(query, [user.UserID])
+            cursor.execute(query, [user.UserID, user.UserID, user.UserID, user.UserID, user.UserID])
             rows = cursor.fetchall()
 
             completed_list = []
@@ -2945,35 +3135,126 @@ def get_branch_report_details(request):
                     'grade': 'N/A'
                 }
 
-            # 3. Fetch branch checklist scores
+            # 3. Fetch branch checklist scores (with auditor remark)
             cursor.execute("""
-                SELECT section_code, section_name, intent_code, intent_title, answer, max_score, score_obtained
-                FROM dbo.audit_branch_checklist_score
-                WHERE audit_id = %s
-                ORDER BY section_code, intent_code
+                SELECT
+                    s.section_code, s.section_name, s.intent_code, s.intent_title,
+                    s.answer, s.max_score, s.score_obtained, s.feedback_id,
+                    f.normal_remark AS auditor_remark
+                FROM dbo.audit_branch_checklist_score s
+                LEFT JOIN dbo.audit_branch_checklist_feedback f
+                    ON f.audit_id = s.audit_id AND f.checklist_id = s.checklist_id
+                WHERE s.audit_id = %s
+                ORDER BY s.section_code, s.intent_code
             """, [audit_id])
             branch_cols = [d[0] for d in cursor.description]
             branch_scores = [dict(zip(branch_cols, r)) for r in cursor.fetchall()]
 
-            # 4. Fetch center checklist scores
+            # Fetch ALL reviewer remarks for branch from review log (one feedback_id can have many entries)
             cursor.execute("""
-                SELECT center_id, parameter_code, parameter_name, answer, max_score, score_obtained
-                FROM dbo.audit_center_checklist_score
-                WHERE audit_id = %s
-                ORDER BY center_id, parameter_code
+                SELECT feedback_id, cycle_id, decision, review_remark, decided_at
+                FROM dbo.audit_branch_checklist_review_log
+                WHERE audit_id = %s AND review_remark IS NOT NULL AND LTRIM(RTRIM(review_remark)) <> ''
+                ORDER BY feedback_id, log_id
+            """, [audit_id])
+            branch_review_log_rows = cursor.fetchall()
+            branch_review_map = {}
+            for row in branch_review_log_rows:
+                fid = row[0]
+                if fid not in branch_review_map:
+                    branch_review_map[fid] = []
+                branch_review_map[fid].append({
+                    'cycle_id': row[1],
+                    'decision': row[2],
+                    'remark': row[3],
+                    'decided_at': row[4].isoformat() if hasattr(row[4], 'isoformat') else str(row[4]) if row[4] else None
+                })
+
+            # Attach reviewer_remarks list to each branch score item
+            for item in branch_scores:
+                fid = item.pop('feedback_id', None)
+                item['reviewer_remarks'] = branch_review_map.get(fid, [])
+
+            # 4. Fetch center checklist scores (with auditor remark)
+            cursor.execute("""
+                SELECT
+                    s.center_id, s.parameter_code, s.parameter_name,
+                    s.answer, s.max_score, s.score_obtained, s.feedback_id,
+                    f.normal_remark AS auditor_remark
+                FROM dbo.audit_center_checklist_score s
+                LEFT JOIN dbo.audit_center_checklist_feedback f
+                    ON f.audit_id = s.audit_id AND f.center_checklist_id = s.center_checklist_id AND f.center_id = s.center_id
+                WHERE s.audit_id = %s
+                ORDER BY s.center_id, s.parameter_code
             """, [audit_id])
             center_cols = [d[0] for d in cursor.description]
             center_scores = [dict(zip(center_cols, r)) for r in cursor.fetchall()]
 
-            # 5. Fetch client checklist scores
+            # Fetch ALL reviewer remarks for center from review log
+            try:
+                cursor.execute("""
+                    SELECT feedback_id, cycle_id, decision, review_remark, decided_at
+                    FROM dbo.audit_center_checklist_review_log
+                    WHERE audit_id = %s AND review_remark IS NOT NULL AND LTRIM(RTRIM(review_remark)) <> ''
+                    ORDER BY feedback_id, log_id
+                """, [audit_id])
+                center_review_log_rows = cursor.fetchall()
+                center_review_map = {}
+                for row in center_review_log_rows:
+                    fid = row[0]
+                    if fid not in center_review_map:
+                        center_review_map[fid] = []
+                    center_review_map[fid].append({
+                        'cycle_id': row[1], 'decision': row[2], 'remark': row[3],
+                        'decided_at': row[4].isoformat() if hasattr(row[4], 'isoformat') else str(row[4]) if row[4] else None
+                    })
+            except Exception:
+                center_review_map = {}
+
+            for item in center_scores:
+                fid = item.pop('feedback_id', None)
+                item['reviewer_remarks'] = center_review_map.get(fid, [])
+
+            # 5. Fetch client checklist scores (with auditor remark)
             cursor.execute("""
-                SELECT center_id, client_id, client_name, parameter_code, parameter_name, answer, max_score, score_obtained
-                FROM dbo.audit_client_checklist_score
-                WHERE audit_id = %s
-                ORDER BY center_id, client_id, parameter_code
+                SELECT
+                    s.center_id, s.client_id, s.client_name,
+                    s.parameter_code, s.parameter_name,
+                    s.answer, s.max_score, s.score_obtained, s.feedback_id,
+                    f.remarks AS auditor_remark
+                FROM dbo.audit_client_checklist_score s
+                LEFT JOIN dbo.audit_client_checklist_feedback f
+                    ON f.audit_id = s.audit_id AND f.client_checklist_id = s.client_checklist_id AND f.client_id = s.client_id
+                WHERE s.audit_id = %s
+                ORDER BY s.center_id, s.client_id, s.parameter_code
             """, [audit_id])
             client_cols = [d[0] for d in cursor.description]
             client_scores = [dict(zip(client_cols, r)) for r in cursor.fetchall()]
+
+            # Fetch ALL reviewer remarks for client from review log
+            try:
+                cursor.execute("""
+                    SELECT feedback_id, cycle_id, decision, review_remark, decided_at
+                    FROM dbo.audit_client_checklist_review_log
+                    WHERE audit_id = %s AND review_remark IS NOT NULL AND LTRIM(RTRIM(review_remark)) <> ''
+                    ORDER BY feedback_id, log_id
+                """, [audit_id])
+                client_review_log_rows = cursor.fetchall()
+                client_review_map = {}
+                for row in client_review_log_rows:
+                    fid = row[0]
+                    if fid not in client_review_map:
+                        client_review_map[fid] = []
+                    client_review_map[fid].append({
+                        'cycle_id': row[1], 'decision': row[2], 'remark': row[3],
+                        'decided_at': row[4].isoformat() if hasattr(row[4], 'isoformat') else str(row[4]) if row[4] else None
+                    })
+            except Exception:
+                client_review_map = {}
+
+            for item in client_scores:
+                fid = item.pop('feedback_id', None)
+                item['reviewer_remarks'] = client_review_map.get(fid, [])
 
         return JsonResponse({
             'success': True,
@@ -3040,3 +3321,1305 @@ def get_auditor_dashboard(request):
         log_error(f"get_auditor_dashboard: SP execution error: {str(e)}")
         return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
 
+
+@csrf_exempt
+def save_selected_centers(request):
+    """
+    POST API to save selected centers for a specific audit.
+    Expects JSON body:
+    {
+        "token": "...",
+        "audit_id": 71,
+        "branch_id": 248,
+        "centers": [
+            { "center_id": "C01", "center_name": "Center A" },
+            ...
+        ]
+    }
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+        audit_id = data.get('audit_id')
+        branch_id = data.get('branch_id')
+        centers = data.get('centers', [])
+    except Exception as e:
+        log_error(f"save_selected_centers: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid token'}, status=401)
+
+    if not audit_id or not branch_id:
+        return JsonResponse({'success': False, 'message': 'audit_id and branch_id are required'}, status=400)
+
+    try:
+        # Convert centers list to JSON string
+        centers_json = json.dumps(centers)
+
+        from django.db import connection
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                EXEC dbo.usp_ManageAuditorPlans
+                    @Action = 'SAVE',
+                    @AuditID = %s,
+                    @BranchID = %s,
+                    @CenterIDsJson = %s
+            """, [audit_id, branch_id, centers_json])
+            
+            row = cursor.fetchone()
+            success = row[0] if row else 0
+            message = row[1] if row and len(row) > 1 else 'Centers saved'
+
+        return JsonResponse({'success': bool(success), 'message': message})
+    except Exception as e:
+        log_error(f"save_selected_centers failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def get_selected_centers(request):
+    """
+    POST API to fetch selected centers for a specific audit.
+    Expects JSON body:
+    {
+        "token": "...",
+        "audit_id": 71
+    }
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+        audit_id = data.get('audit_id')
+    except Exception as e:
+        log_error(f"get_selected_centers: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid token'}, status=401)
+
+    if not audit_id:
+        return JsonResponse({'success': False, 'message': 'audit_id is required'}, status=400)
+
+    try:
+        from django.db import connection
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                EXEC dbo.usp_ManageAuditorPlans
+                    @Action = 'GET',
+                    @AuditID = %s
+            """, [audit_id])
+            
+            columns = [col[0] for col in cursor.description]
+            rows = cursor.fetchall()
+
+        selected_centers = []
+        for row in rows:
+            selected_centers.append(dict(zip(columns, row)))
+
+        return JsonResponse({'success': True, 'centers': selected_centers})
+    except Exception as e:
+        log_error(f"get_selected_centers failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def get_auditor_plans(request):
+    """
+    POST API to retrieve all branches and their selected centers for the logged-in auditor.
+    Expects JSON body:
+    {
+        "token": "..."
+    }
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+    except Exception as e:
+        log_error(f"get_auditor_plans: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid token'}, status=401)
+
+    try:
+        from django.db import connection
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                EXEC dbo.usp_ManageAuditorPlans
+                    @Action = 'GET_ALL',
+                    @UserID = %s
+            """, [user.UserID])
+            
+            columns = [col[0] for col in cursor.description]
+            rows = cursor.fetchall()
+
+        # Build list of centers and group by branch/audit in Python
+        plans_map = {}
+        for row in rows:
+            row_dict = dict(zip(columns, row))
+            audit_id = row_dict.get('auditId')
+            
+            if audit_id not in plans_map:
+                plans_map[audit_id] = {
+                    'auditId': audit_id,
+                    'branchId': row_dict.get('branchId'),
+                    'branchName': row_dict.get('branchName'),
+                    'division': row_dict.get('division'),
+                    'startDate': row_dict.get('startDate'),
+                    'endDate': row_dict.get('endDate'),
+                    'auditStatus': row_dict.get('auditStatus'),
+                    'selectedCenters': []
+                }
+            
+            center_id = row_dict.get('centerId')
+            if center_id:
+                plans_map[audit_id]['selectedCenters'].append({
+                    'centerId': center_id,
+                    'centerName': row_dict.get('centerName'),
+                    'selectedAt': row_dict.get('selectedAt').isoformat() if hasattr(row_dict.get('selectedAt'), 'isoformat') else row_dict.get('selectedAt')
+                })
+
+        plans_list = list(plans_map.values())
+
+        return JsonResponse({'success': True, 'plans': plans_list})
+    except Exception as e:
+        log_error(f"get_auditor_plans failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+# ============================================================
+# AUDIT REVIEW WORKFLOW ENDPOINTS
+# ============================================================
+
+@csrf_exempt
+def submit_for_review(request):
+    """
+    POST /audit/workflow/submit-for-review/
+    Auditor submits the completed audit for division head review.
+    Also calculates scores (like end_branch_audit) before calling the review SP.
+
+    Expects JSON body:
+    {
+        "token": "...",
+        "audit_id": 71,
+        "branch_id": 248
+    }
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+        audit_id = data.get('audit_id')
+        branch_id = data.get('branch_id')
+    except Exception as e:
+        log_error(f"submit_for_review: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid or expired token'}, status=401)
+
+    if not audit_id or not branch_id:
+        return JsonResponse({'success': False, 'message': 'audit_id and branch_id are required'}, status=400)
+
+    try:
+        with connection.cursor() as cursor:
+            # Step 1: Set audit_end_date if not set, update status to in-progress momentarily
+            # (scores calculation requires audit_end_date to be set)
+            cursor.execute("""
+                UPDATE dbo.audit_branch_progress
+                SET audit_end_date = ISNULL(audit_end_date, CAST(GETDATE() AS DATE))
+                WHERE audit_id = %s AND audit_branch_id = %s AND audit_assigned_to = %s
+            """, [audit_id, branch_id, user.UserID])
+
+            # Step 2: Run score population stored procedure
+            try:
+                cursor.execute("""
+                    SELECT MAX(audit_end_date) FROM dbo.audit_branch_progress 
+                    WHERE audit_id = %s AND audit_branch_id = %s
+                """, [audit_id, branch_id])
+                row = cursor.fetchone()
+                as_on_date = row[0] if row and row[0] else None
+
+                cursor.execute("EXEC dbo.usp_PopulateAuditChecklistScores @AsOnDate = %s", [as_on_date])
+            except Exception as sp_err:
+                log_error(f"submit_for_review: usp_PopulateAuditChecklistScores failed: {str(sp_err)}")
+                # Non-fatal — continue with submission
+
+            # Step 3: Call the review workflow SP
+            cursor.execute("""
+                EXEC dbo.usp_AuditWorkflow_Monolithic
+                    @process_name = 'submit_for_review',
+                    @audit_id = %s,
+                    @branch_id = %s,
+                    @submitted_by = %s
+            """, [audit_id, branch_id, user.UserID])
+
+        log_info(f"submit_for_review: audit {audit_id} branch {branch_id} submitted by user {user.UserID}")
+        return JsonResponse({
+            'success': True,
+            'message': 'Audit submitted for review successfully.'
+        })
+    except Exception as e:
+        log_error(f"submit_for_review: failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def get_review_queue(request):
+    """
+    POST /audit/workflow/review-queue/
+    Division Head: fetches list of audits pending their review.
+    Returns audits in status 'submitted' or 'under-review' assigned to auditors
+    under this division head's hierarchy.
+
+    Expects JSON body:
+    {
+        "token": "..."
+    }
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+    except Exception as e:
+        log_error(f"get_review_queue: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid or expired token'}, status=401)
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT
+                    p.audit_id,
+                    p.audit_branch_id      AS branch_id,
+                    p.audit_status,
+                    p.audit_start_date,
+                    p.audit_end_date,
+                    p.current_cycle_no,
+                    p.audit_pending_with,
+                    b.Branch               AS branch_name,
+                    b.Division,
+                    b.Zone,
+                    b.Region,
+                    b.Hub,
+                    u.UserName             AS auditor_name,
+                    rc.submitted_at,
+                    rc.cycle_no,
+                    rc.review_started_at
+                FROM dbo.audit_branch_progress p
+                INNER JOIN dbo.VW_Branch_To_GeographicalHierarchy_head_audit h
+                    ON h.fa_userid = p.audit_assigned_to
+                   AND h.division_head_userid = %s
+                LEFT JOIN dbo.VW_Branch_To_GeographicalHierarchy b
+                    ON b.BranchID = p.audit_branch_id
+                LEFT JOIN dbo.accounts_mst_usertbl u
+                    ON u.UserID = p.audit_assigned_to
+                LEFT JOIN dbo.audit_branch_review_cycle rc
+                    ON rc.audit_id = p.audit_id
+                   AND rc.branch_id = p.audit_branch_id
+                   AND rc.cycle_no = p.current_cycle_no
+                WHERE p.audit_status IN ('submitted', 'under-review')
+                ORDER BY rc.submitted_at DESC
+            """, [user.UserID])
+
+            columns = [col[0] for col in cursor.description]
+            rows = cursor.fetchall()
+
+        audits = []
+        for row in rows:
+            d = dict(zip(columns, row))
+            for k, v in d.items():
+                if hasattr(v, 'isoformat'):
+                    d[k] = v.isoformat()
+            audits.append(d)
+
+        return JsonResponse({
+            'success': True,
+            'audits': audits,
+            'pending_count': len(audits)
+        })
+    except Exception as e:
+        log_error(f"get_review_queue: failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def get_review_points(request):
+    """
+    POST /audit/workflow/review-points/
+    Division Head: fetches all checklist points (branch + center + client)
+    for a specific audit with their current review_status.
+
+    Expects JSON body:
+    {
+        "token": "...",
+        "audit_id": 71,
+        "branch_id": 248
+    }
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+        audit_id = data.get('audit_id')
+        branch_id = data.get('branch_id')
+    except Exception as e:
+        log_error(f"get_review_points: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid or expired token'}, status=401)
+
+    if not audit_id or not branch_id:
+        return JsonResponse({'success': False, 'message': 'audit_id and branch_id are required'}, status=400)
+
+    try:
+        with connection.cursor() as cursor:
+            # Fetch audit metadata
+            cursor.execute("""
+                SELECT
+                    p.audit_id, p.audit_branch_id, p.audit_status,
+                    p.audit_start_date, p.audit_end_date, p.current_cycle_no,
+                    b.Branch AS branch_name, b.Division,
+                    u.UserName AS auditor_name,
+                    rc.cycle_id, rc.submitted_at, rc.reviewer_id
+                FROM dbo.audit_branch_progress p
+                LEFT JOIN dbo.VW_Branch_To_GeographicalHierarchy b ON b.BranchID = p.audit_branch_id
+                LEFT JOIN dbo.accounts_mst_usertbl u ON u.UserID = p.audit_assigned_to
+                LEFT JOIN dbo.audit_branch_review_cycle rc
+                    ON rc.audit_id = p.audit_id
+                   AND rc.branch_id = p.audit_branch_id
+                   AND rc.cycle_no = p.current_cycle_no
+                WHERE p.audit_id = %s AND p.audit_branch_id = %s
+            """, [audit_id, branch_id])
+            meta_row = cursor.fetchone()
+            if not meta_row:
+                return JsonResponse({'success': False, 'message': 'Audit not found'}, status=404)
+
+            meta_cols = [d[0] for d in cursor.description]
+            audit_meta = dict(zip(meta_cols, meta_row))
+            for k, v in audit_meta.items():
+                if hasattr(v, 'isoformat'):
+                    audit_meta[k] = v.isoformat()
+
+            # Fetch branch points
+            cursor.execute("""
+                SELECT
+                    f.id AS feedback_id,
+                    f.checklist_id,
+                    f.section_code,
+                    f.section_name,
+                    f.intent_code,
+                    f.intent_title,
+                    f.answer,
+                    f.normal_remark AS auditor_remark,
+                    f.review_status,
+                    f.review_remark,
+                    f.reviewed_by,
+                    f.reviewed_at,
+                    nf.id AS normal_file_id,
+                    nf.file_name AS normal_file_name
+                FROM dbo.audit_branch_checklist_feedback f
+                LEFT JOIN dbo.audit_branch_normal_files nf
+                    ON nf.feedback_id = f.id AND nf.is_archived = 0
+                WHERE f.audit_id = %s AND TRY_CAST(f.branch_id AS INT) = %s
+                ORDER BY f.section_code, f.intent_code
+            """, [audit_id, branch_id])
+            branch_cols = [d[0] for d in cursor.description]
+            branch_points = []
+            for row in cursor.fetchall():
+                d = dict(zip(branch_cols, row))
+                for k, v in d.items():
+                    if hasattr(v, 'isoformat'):
+                        d[k] = v.isoformat()
+                branch_points.append(d)
+
+            # Fetch center points
+            cursor.execute("""
+                SELECT
+                    f.id AS feedback_id,
+                    f.center_checklist_id AS checklist_id,
+                    f.center_id,
+                    f.parameter_code,
+                    f.parameter_name,
+                    f.answer,
+                    f.normal_remark AS auditor_remark,
+                    f.review_status,
+                    f.review_remark,
+                    f.reviewed_by,
+                    f.reviewed_at,
+                    nf.id AS normal_file_id,
+                    nf.file_name AS normal_file_name
+                FROM dbo.audit_center_checklist_feedback f
+                LEFT JOIN dbo.audit_center_normal_files nf
+                    ON nf.feedback_id = f.id AND nf.is_archived = 0
+                WHERE f.audit_id = %s AND TRY_CAST(f.branchid AS INT) = %s
+                ORDER BY f.center_id, f.parameter_code
+            """, [audit_id, branch_id])
+            center_cols = [d[0] for d in cursor.description]
+            center_points = []
+            for row in cursor.fetchall():
+                d = dict(zip(center_cols, row))
+                for k, v in d.items():
+                    if hasattr(v, 'isoformat'):
+                        d[k] = v.isoformat()
+                center_points.append(d)
+
+            # Fetch client points
+            cursor.execute("""
+                SELECT
+                    f.id AS feedback_id,
+                    f.client_checklist_id AS checklist_id,
+                    f.center_id,
+                    TRY_CAST(f.client_id AS INT) AS client_id,
+                    f.client_name,
+                    f.parameter_code,
+                    f.parameter_name,
+                    f.answer,
+                    f.remarks AS auditor_remark,
+                    CAST(f.review_status AS VARCHAR(20)) AS review_status,
+                    f.review_remark,
+                    f.reviewed_by,
+                    f.reviewed_at
+                FROM dbo.audit_client_checklist_feedback f
+                WHERE f.audit_id = %s AND TRY_CAST(f.branch_id AS INT) = %s
+                ORDER BY f.center_id, f.client_id, f.parameter_code
+            """, [audit_id, branch_id])
+            client_cols = [d[0] for d in cursor.description]
+            client_points = []
+            for row in cursor.fetchall():
+                d = dict(zip(client_cols, row))
+                for k, v in d.items():
+                    if hasattr(v, 'isoformat'):
+                        d[k] = v.isoformat()
+                client_points.append(d)
+
+        return JsonResponse({
+            'success': True,
+            'audit_meta': audit_meta,
+            'branch_points': branch_points,
+            'center_points': center_points,
+            'client_points': client_points
+        })
+    except Exception as e:
+        log_error(f"get_review_points: failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def record_point_decision(request):
+    """
+    POST /audit/workflow/record-decision/
+    Division Head: validates or reverts a single checklist point.
+
+    Expects JSON body:
+    {
+        "token": "...",
+        "feedback_id": 94,
+        "entity_type": "branch",   -- 'branch' | 'center' | 'client'
+        "decision": "validated",   -- 'validated' | 'reverted'
+        "review_remark": "..."     -- optional, required if reverted
+    }
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+        feedback_id = data.get('feedback_id')
+        entity_type = data.get('entity_type')
+        decision = data.get('decision')
+        review_remark = data.get('review_remark', '')
+    except Exception as e:
+        log_error(f"record_point_decision: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid or expired token'}, status=401)
+
+    if not feedback_id or not entity_type or not decision:
+        return JsonResponse({'success': False, 'message': 'feedback_id, entity_type, and decision are required'}, status=400)
+
+    if decision not in ('validated', 'reverted'):
+        return JsonResponse({'success': False, 'message': 'decision must be validated or reverted'}, status=400)
+
+    if entity_type not in ('branch', 'center', 'client'):
+        return JsonResponse({'success': False, 'message': 'entity_type must be branch, center, or client'}, status=400)
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                EXEC dbo.usp_AuditWorkflow_Monolithic
+                    @process_name   = 'record_point_decision',
+                    @feedback_id    = %s,
+                    @entity_type    = %s,
+                    @reviewer_id    = %s,
+                    @decision       = %s,
+                    @review_remark  = %s
+            """, [feedback_id, entity_type, user.UserID, decision, review_remark or None])
+
+        log_info(f"record_point_decision: feedback_id={feedback_id} entity={entity_type} decision={decision} by user {user.UserID}")
+        return JsonResponse({
+            'success': True,
+            'message': f'Point {decision} successfully.'
+        })
+    except Exception as e:
+        log_error(f"record_point_decision: failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def finalize_review(request):
+    """
+    POST /audit/workflow/finalize-review/
+    Division Head: finalizes the review cycle for a branch audit.
+    - If all points validated → audit_status = 'completed'
+    - If any points reverted → audit_status = 'reverted', pending back to auditor
+
+    Expects JSON body:
+    {
+        "token": "...",
+        "audit_id": 71,
+        "branch_id": 248
+    }
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+        audit_id = data.get('audit_id')
+        branch_id = data.get('branch_id')
+    except Exception as e:
+        log_error(f"finalize_review: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid or expired token'}, status=401)
+
+    if not audit_id or not branch_id:
+        return JsonResponse({'success': False, 'message': 'audit_id and branch_id are required'}, status=400)
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                EXEC dbo.usp_AuditWorkflow_Monolithic
+                    @process_name = 'finalize_review',
+                    @audit_id     = %s,
+                    @branch_id    = %s,
+                    @reviewer_id  = %s
+            """, [audit_id, branch_id, user.UserID])
+
+            # Fetch the resulting status
+            cursor.execute("""
+                SELECT audit_status FROM dbo.audit_branch_progress
+                WHERE audit_id = %s AND audit_branch_id = %s
+            """, [audit_id, branch_id])
+            status_row = cursor.fetchone()
+            final_status = status_row[0] if status_row else 'unknown'
+
+        log_info(f"finalize_review: audit {audit_id} branch {branch_id} finalized by user {user.UserID} -> {final_status}")
+
+        message_map = {
+            'completed': 'Review finalized. Audit is now completed — all points validated.',
+            'reverted': 'Review finalized. Audit reverted to auditor — some points need correction.',
+        }
+        return JsonResponse({
+            'success': True,
+            'final_status': final_status,
+            'message': message_map.get(final_status, f'Review finalized. Status: {final_status}')
+        })
+    except Exception as e:
+        log_error(f"finalize_review: failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def get_audit_review_status(request):
+    """
+    POST /audit/workflow/review-status/
+    Auditor: fetches current review status + any review remarks for their audit.
+    Used to show the auditor what was reverted and what needs fixing.
+
+    Expects JSON body:
+    {
+        "token": "...",
+        "audit_id": 71,
+        "branch_id": 248
+    }
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+        audit_id = data.get('audit_id')
+        branch_id = data.get('branch_id')
+    except Exception as e:
+        log_error(f"get_audit_review_status: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid or expired token'}, status=401)
+
+    if not audit_id or not branch_id:
+        return JsonResponse({'success': False, 'message': 'audit_id and branch_id are required'}, status=400)
+
+    try:
+        with connection.cursor() as cursor:
+            # Fetch audit status + cycle info
+            cursor.execute("""
+                SELECT
+                    p.audit_status,
+                    p.current_cycle_no,
+                    p.audit_pending_with,
+                    rc.submitted_at,
+                    rc.review_started_at,
+                    rc.review_completed_at,
+                    rc.outcome,
+                    u_rev.UserName AS reviewer_name
+                FROM dbo.audit_branch_progress p
+                LEFT JOIN dbo.audit_branch_review_cycle rc
+                    ON rc.audit_id = p.audit_id
+                   AND rc.branch_id = p.audit_branch_id
+                   AND rc.cycle_no = p.current_cycle_no
+                LEFT JOIN dbo.accounts_mst_usertbl u_rev
+                    ON u_rev.UserID = p.audit_pending_with
+                WHERE p.audit_id = %s AND p.audit_branch_id = %s
+            """, [audit_id, branch_id])
+            row = cursor.fetchone()
+            if not row:
+                return JsonResponse({'success': False, 'message': 'Audit not found'}, status=404)
+
+            cols = [d[0] for d in cursor.description]
+            status_info = dict(zip(cols, row))
+            for k, v in status_info.items():
+                if hasattr(v, 'isoformat'):
+                    status_info[k] = v.isoformat()
+
+            # Fetch branch feedback with review remarks
+            cursor.execute("""
+                SELECT
+                    f.id AS feedback_id, f.checklist_id,
+                    f.intent_code, f.intent_title,
+                    f.answer, f.review_status, f.review_remark
+                FROM dbo.audit_branch_checklist_feedback f
+                WHERE f.audit_id = %s AND TRY_CAST(f.branch_id AS INT) = %s
+                ORDER BY f.section_code, f.intent_code
+            """, [audit_id, branch_id])
+            branch_review = [dict(zip([d[0] for d in cursor.description], r)) for r in cursor.fetchall()]
+
+            # Fetch center feedback with review remarks
+            cursor.execute("""
+                SELECT
+                    f.id AS feedback_id, f.center_checklist_id AS checklist_id,
+                    f.center_id, f.parameter_code, f.parameter_name,
+                    f.answer, f.review_status, f.review_remark
+                FROM dbo.audit_center_checklist_feedback f
+                WHERE f.audit_id = %s AND TRY_CAST(f.branchid AS INT) = %s
+                ORDER BY f.center_id, f.parameter_code
+            """, [audit_id, branch_id])
+            center_review = [dict(zip([d[0] for d in cursor.description], r)) for r in cursor.fetchall()]
+
+            # Fetch client feedback with review remarks
+            cursor.execute("""
+                SELECT
+                    f.id AS feedback_id, f.client_checklist_id AS checklist_id,
+                    f.center_id, TRY_CAST(f.client_id AS INT) AS client_id,
+                    f.client_name, f.parameter_code, f.parameter_name,
+                    f.answer, CAST(f.review_status AS VARCHAR(20)) AS review_status, f.review_remark
+                FROM dbo.audit_client_checklist_feedback f
+                WHERE f.audit_id = %s AND TRY_CAST(f.branch_id AS INT) = %s
+                ORDER BY f.center_id, f.client_id, f.parameter_code
+            """, [audit_id, branch_id])
+            client_review = [dict(zip([d[0] for d in cursor.description], r)) for r in cursor.fetchall()]
+
+        return JsonResponse({
+            'success': True,
+            'status_info': status_info,
+            'branch_review': branch_review,
+            'center_review': center_review,
+            'client_review': client_review
+        })
+    except Exception as e:
+        log_error(f"get_audit_review_status: failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+
+
+
+@csrf_exempt
+def get_branch_report_excel(request):
+    try:
+        import json
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+        audit_id = data.get('audit_id')
+        if not token or not audit_id:
+            return JsonResponse({'success': False, 'message': 'Missing required fields'})
+
+        user = validate_token_user(token)
+        if not user:
+            return JsonResponse({'success': False, 'message': 'Invalid or expired token'}, status=401)
+
+        with connection.cursor() as cursor:
+            # 1. Fetch metadata
+            cursor.execute("""
+                SELECT 
+                    p.audit_branch_id, 
+                    b.Branch, 
+                    p.audit_start_date, 
+                    p.audit_end_date, 
+                    u.UserName AS auditor_name,
+                    p.audit_status
+                FROM dbo.audit_branch_progress p
+                LEFT JOIN dbo.VW_Branch_To_GeographicalHierarchy b ON p.audit_branch_id = b.BranchID
+                LEFT JOIN dbo.accounts_mst_usertbl u ON p.audit_assigned_to = u.UserID
+                WHERE p.audit_id = %s
+            """, [audit_id])
+            meta_row = cursor.fetchone()
+            if not meta_row:
+                return JsonResponse({'success': False, 'message': 'Audit not found'}, status=404)
+            
+            branch_id = meta_row[0]
+            
+            # Fetch summary
+            cursor.execute("""
+                SELECT 
+                    total_max_score, total_score, score_pct
+                FROM dbo.audit_branch_score_summary
+                WHERE audit_id = %s
+            """, [audit_id])
+            summary_row = cursor.fetchone()
+            
+            total_max = 0
+            total_obtained = 0
+            pct = 0
+            if summary_row:
+                total_max = float(summary_row[0] or 0)
+                total_obtained = float(summary_row[1] or 0)
+                pct = float(summary_row[2] or 0)
+                
+            grade = 'D'
+            if pct > 80.0: grade = 'A'
+            elif pct >= 60.0: grade = 'B'
+            elif pct >= 40.0: grade = 'C'
+
+            metadata = {
+                'branch_name': meta_row[1] or 'Unknown',
+                'audit_period': f"{meta_row[2].strftime('%Y-%m-%d') if meta_row[2] else ''} to {meta_row[3].strftime('%Y-%m-%d') if meta_row[3] else ''}",
+                'auditor_name': meta_row[4] or 'Unknown',
+                'status': meta_row[5],
+                'total_score': total_obtained,
+                'total_max_score': total_max,
+                'percentage': pct,
+                'grade': grade
+            }
+
+            # 2. Fetch Branch Points
+            cursor.execute("""
+                SELECT
+                    f.id AS feedback_id,
+                    f.section_code,
+                    f.intent_title AS intent,
+                    m.intent_description AS risk_issue,
+                    m.category,
+                    f.answer AS yes_no_na,
+                    '' AS sample_verification,
+                    '' AS correct_finding,
+                    '' AS wrong_finding,
+                    '' AS total_sample,
+                    '' AS process_deviation,
+                    s.max_score,
+                    s.score_obtained AS obtained_score,
+                    CASE WHEN s.score_obtained < s.max_score THEN 'Yes' ELSE 'No' END AS is_issue,
+                    f.normal_remark AS auditor_remark
+                FROM dbo.audit_branch_checklist_feedback f
+                LEFT JOIN dbo.audit_branch_checklist_master m ON f.checklist_id = m.checklist_id
+                LEFT JOIN dbo.audit_branch_checklist_score s ON f.checklist_id = s.checklist_id AND f.audit_id = s.audit_id
+                WHERE f.audit_id = %s AND TRY_CAST(f.branch_id AS INT) = %s
+                ORDER BY f.section_code, f.intent_code
+            """, [audit_id, branch_id])
+            branch_cols = [d[0] for d in cursor.description]
+            branch_points = [dict(zip(branch_cols, row)) for row in cursor.fetchall()]
+
+            # Fetch ALL reviewer remarks for branch from review log (multiple per feedback_id)
+            cursor.execute("""
+                SELECT feedback_id, cycle_id, decision, review_remark
+                FROM dbo.audit_branch_checklist_review_log
+                WHERE audit_id = %s AND review_remark IS NOT NULL AND LTRIM(RTRIM(review_remark)) <> ''
+                ORDER BY feedback_id, log_id
+            """, [audit_id])
+            branch_excel_review_map = {}
+            for rrow in cursor.fetchall():
+                fid = rrow[0]
+                if fid not in branch_excel_review_map:
+                    branch_excel_review_map[fid] = []
+                branch_excel_review_map[fid].append(f"Cycle {rrow[1]} ({rrow[2]}): {rrow[3]}")
+
+            for pt in branch_points:
+                fid = pt.pop('feedback_id', None)
+                pt['reviewer_remark'] = '\n'.join(branch_excel_review_map.get(fid, []))
+
+            # 3. Fetch Center Points
+            cursor.execute("""
+                SELECT
+                    f.id AS feedback_id,
+                    f.center_id,
+                    f.parameter_code,
+                    f.parameter_name,
+                    f.answer,
+                    f.normal_remark AS auditor_remark
+                FROM dbo.audit_center_checklist_feedback f
+                WHERE f.audit_id = %s AND TRY_CAST(f.branchid AS INT) = %s
+                ORDER BY f.center_id, f.parameter_code
+            """, [audit_id, branch_id])
+            center_cols = [d[0] for d in cursor.description]
+            center_points = [dict(zip(center_cols, row)) for row in cursor.fetchall()]
+
+            try:
+                cursor.execute("""
+                    SELECT feedback_id, cycle_id, decision, review_remark
+                    FROM dbo.audit_center_checklist_review_log
+                    WHERE audit_id = %s AND review_remark IS NOT NULL AND LTRIM(RTRIM(review_remark)) <> ''
+                    ORDER BY feedback_id, log_id
+                """, [audit_id])
+                center_excel_review_map = {}
+                for rrow in cursor.fetchall():
+                    fid = rrow[0]
+                    if fid not in center_excel_review_map:
+                        center_excel_review_map[fid] = []
+                    center_excel_review_map[fid].append(f"Cycle {rrow[1]} ({rrow[2]}): {rrow[3]}")
+            except Exception:
+                center_excel_review_map = {}
+
+            for pt in center_points:
+                fid = pt.pop('feedback_id', None)
+                pt['reviewer_remark'] = '\n'.join(center_excel_review_map.get(fid, []))
+
+            # 4. Fetch Client Points
+            cursor.execute("""
+                SELECT
+                    f.id AS feedback_id,
+                    f.center_id,
+                    TRY_CAST(f.client_id AS INT) AS client_id,
+                    f.client_name,
+                    f.parameter_code,
+                    f.parameter_name,
+                    f.answer,
+                    f.remarks AS auditor_remark
+                FROM dbo.audit_client_checklist_feedback f
+                WHERE f.audit_id = %s AND TRY_CAST(f.branch_id AS INT) = %s
+                ORDER BY f.center_id, f.client_id, f.parameter_code
+            """, [audit_id, branch_id])
+            client_cols = [d[0] for d in cursor.description]
+            client_points = [dict(zip(client_cols, row)) for row in cursor.fetchall()]
+
+            try:
+                cursor.execute("""
+                    SELECT feedback_id, cycle_id, decision, review_remark
+                    FROM dbo.audit_client_checklist_review_log
+                    WHERE audit_id = %s AND review_remark IS NOT NULL AND LTRIM(RTRIM(review_remark)) <> ''
+                    ORDER BY feedback_id, log_id
+                """, [audit_id])
+                client_excel_review_map = {}
+                for rrow in cursor.fetchall():
+                    fid = rrow[0]
+                    if fid not in client_excel_review_map:
+                        client_excel_review_map[fid] = []
+                    client_excel_review_map[fid].append(f"Cycle {rrow[1]} ({rrow[2]}): {rrow[3]}")
+            except Exception:
+                client_excel_review_map = {}
+
+            for pt in client_points:
+                fid = pt.pop('feedback_id', None)
+                pt['reviewer_remark'] = '\n'.join(client_excel_review_map.get(fid, []))
+
+        from .excel_utils import generate_branch_audit_excel
+        import io
+        from django.http import HttpResponse
+
+        wb = generate_branch_audit_excel(metadata, branch_points, center_points, client_points)
+        buffer = io.BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+        
+        response = HttpResponse(buffer.getvalue(), content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        response['Content-Disposition'] = f'attachment; filename="Branch_Report_{audit_id}.xlsx"'
+        return response
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JsonResponse({'success': False, 'message': str(e)}, status=500)
+
+
+# ============================================================
+# AUDITEE (BRANCH MANAGER) ENDPOINTS
+# ============================================================
+
+def get_user_branch_ids(cursor, user):
+    branch_id = int(user.BranchID) if user.BranchID else 0
+    buid = int(user.Buid) if user.Buid else 0
+    butype = int(user.BUType) if user.BUType else 0
+
+    branch_ids = []
+    if butype == 2 and buid:
+        cursor.execute("""
+            SELECT DISTINCT branchid FROM VW_Branch_To_GeographicalHierarchy
+            WHERE divisionid = %s
+        """, [buid])
+        branch_ids = [str(row[0]) for row in cursor.fetchall()]
+    elif butype == 3 and buid:
+        cursor.execute("""
+            SELECT DISTINCT branchid FROM VW_Branch_To_GeographicalHierarchy
+            WHERE regionid = %s
+        """, [buid])
+        branch_ids = [str(row[0]) for row in cursor.fetchall()]
+    elif butype == 4 and buid:
+        cursor.execute("""
+            SELECT DISTINCT branchid FROM VW_Branch_To_GeographicalHierarchy
+            WHERE hubid = %s
+        """, [buid])
+        branch_ids = [str(row[0]) for row in cursor.fetchall()]
+    elif butype == 5 and buid:
+        cursor.execute("""
+            SELECT DISTINCT branchid FROM VW_Branch_To_GeographicalHierarchy
+            WHERE branchid = %s
+        """, [buid])
+        branch_ids = [str(row[0]) for row in cursor.fetchall()]
+    elif branch_id:
+        branch_ids = [str(branch_id)]
+    
+    if not branch_ids:
+        branch_ids = ['0']
+    return branch_ids
+
+
+@csrf_exempt
+def get_auditee_dashboard(request):
+    """
+    POST /audit/auditee/dashboard/
+    Fetches dashboard KPIs for the logged in Auditee (Branch Manager or higher).
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+    except Exception as e:
+        log_error(f"get_auditee_dashboard: parsing failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': 'Invalid request body or JSON parse error'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid or expired token'}, status=401)
+
+    branch_id = int(user.BranchID) if user.BranchID else 0
+    buid = int(user.Buid) if user.Buid else 0
+    butype = int(user.BUType) if user.BUType else 0
+    print("butype", butype)
+    print("buid", buid)
+    print("branch_id", branch_id)
+    if not branch_id and not buid:
+        return JsonResponse({'success': False, 'message': 'User is not assigned to a branch or hierarchy unit'}, status=400)
+
+    try:
+        with connection.cursor() as cursor:
+            # 0. get all branchid below the specific user
+            branch_ids = get_user_branch_ids(cursor, user)
+            print("branch_ids", branch_ids)
+
+            placeholders = ', '.join(['%s'] * len(branch_ids))
+
+            # 1. Get total completed audits
+            cursor.execute(f"""
+                SELECT COUNT(*) FROM dbo.audit_branch_progress
+                WHERE audit_branch_id in ({placeholders}) AND (audit_status = 'completed' or audit_status = 'submitted' or audit_status='reverted')
+            """, branch_ids)
+            completed_audits = cursor.fetchone()[0]
+
+            # 2. Get latest audit score
+            cursor.execute(f"""
+                SELECT TOP 1 s.score_pct, c.grade, p.audit_end_date, p.audit_id
+                FROM dbo.audit_branch_score_summary s
+                JOIN dbo.audit_branch_progress p ON s.audit_id = p.audit_id
+                LEFT JOIN dbo.audit_plan_current c ON s.audit_id = c.id
+                WHERE p.audit_branch_id in ({placeholders}) AND (p.audit_status = 'completed' or p.audit_status = 'submitted' or audit_status='reverted')
+                ORDER BY p.audit_end_date DESC
+            """, branch_ids)
+            latest_audit = cursor.fetchone()
+            latest_score = latest_audit[0] if latest_audit else 0
+            latest_grade = latest_audit[1] if latest_audit else '-'
+            latest_date = latest_audit[2].isoformat() if latest_audit and latest_audit[2] else None
+            latest_audit_id = latest_audit[3] if latest_audit else None
+            
+            # 3. Get open CAPs count
+            total_open_caps = 0
+            if latest_audit_id:
+                params = branch_ids + [latest_audit_id]
+                cursor.execute(f"""
+                    SELECT COUNT(*) FROM dbo.audit_branch_checklist_feedback
+                    WHERE TRY_CAST(branch_id AS INT) in ({placeholders}) AND answer = 'Yes' and audit_id = %s
+                """, params)
+                branch_caps = cursor.fetchone()[0]
+
+                cursor.execute(f"""
+                    SELECT COUNT(*) FROM dbo.audit_center_checklist_feedback
+                    WHERE TRY_CAST(branchid AS INT) in ({placeholders}) AND answer = 'Yes' and audit_id = %s
+                """, params)
+                center_caps = cursor.fetchone()[0]
+
+                cursor.execute(f"""
+                    SELECT COUNT(*) FROM dbo.audit_client_checklist_feedback
+                    WHERE TRY_CAST(branch_id AS INT) in ({placeholders}) AND answer = 'Yes' and audit_id = %s
+                """, params)
+                client_caps = cursor.fetchone()[0]
+
+                total_open_caps = branch_caps + center_caps + client_caps
+
+        return JsonResponse({
+            'success': True,
+            'completed_audits': completed_audits,
+            'latest_score': float(latest_score) if latest_score else 0,
+            'latest_grade': latest_grade,
+            'latest_date': latest_date,
+            'total_open_caps': total_open_caps,
+            'branch_name': f"Branch {branch_id or buid}"
+        })
+    except Exception as e:
+        log_error(f"get_auditee_dashboard: failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def get_auditee_audits(request):
+    """
+    POST /audit/auditee/audits/
+    Fetches all completed audits for the logged in Auditee (Branch Manager or higher).
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': f'Invalid request: {str(e)}'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid or expired token'}, status=401)
+
+    branch_id = int(user.BranchID) if user.BranchID else 0
+    buid = int(user.Buid) if user.Buid else 0
+    if not branch_id and not buid:
+        return JsonResponse({'success': False, 'message': 'User is not assigned to a branch or hierarchy unit'}, status=400)
+
+    try:
+        with connection.cursor() as cursor:
+            branch_ids = get_user_branch_ids(cursor, user)
+            placeholders = ', '.join(['%s'] * len(branch_ids))
+            # Query completed audits for branch
+            query = f"""
+                SELECT 
+                    p.audit_id, 
+                    p.audit_branch_id, 
+                    p.audit_start_date, 
+                    p.audit_end_date, 
+                    p.audit_status,
+                    b.Branch as branch_name, 
+                    b.Division, 
+                    b.Zone,
+                    b.Region,
+                    u.UserName as auditor_name,
+                    c.grade,
+                    s.score_pct,
+                    s.total_max_score,
+                    s.total_score,
+                    c.audit_mode
+                FROM dbo.audit_branch_progress p
+                LEFT JOIN dbo.VW_Branch_To_GeographicalHierarchy b ON p.audit_branch_id = b.BranchID
+                LEFT JOIN dbo.accounts_mst_usertbl u ON p.audit_assigned_to = u.UserID
+                LEFT JOIN dbo.audit_plan_current c ON p.audit_id = c.id
+                LEFT JOIN dbo.audit_branch_score_summary s ON p.audit_id = s.audit_id
+                WHERE p.audit_status = 'completed' or audit_status='reverted' or audit_status='submitted' AND p.audit_branch_id in ({placeholders})
+                ORDER BY p.audit_end_date DESC
+            """
+            cursor.execute(query, branch_ids)
+            columns = [col[0] for col in cursor.description]
+            rows = cursor.fetchall()
+            
+        audits = []
+        for row in rows:
+            audit = dict(zip(columns, row))
+            # formatting dates and numbers
+            if audit['audit_start_date']:
+                audit['audit_start_date'] = audit['audit_start_date'].isoformat()
+            if audit['audit_end_date']:
+                audit['audit_end_date'] = audit['audit_end_date'].isoformat()
+            if audit['score_pct'] is not None:
+                audit['score_pct'] = float(audit['score_pct'])
+                
+            audits.append(audit)
+
+        return JsonResponse({
+            'success': True,
+            'audits': audits
+        })
+    except Exception as e:
+        log_error(f"get_auditee_audits failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def get_auditee_caps(request):
+    """
+    POST /audit/auditee/caps/
+    Fetches all Corrective Action Points for the Auditee's branch.
+    """
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        data = json.loads(request.body) if request.body else {}
+        token = data.get('token', '')
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': f'Invalid request: {str(e)}'}, status=400)
+
+    user = validate_token_user(token)
+    if not user:
+        return JsonResponse({'success': False, 'message': 'Invalid or expired token'}, status=401)
+
+    branch_id = int(user.BranchID) if user.BranchID else 0
+    buid = int(user.Buid) if user.Buid else 0
+    if not branch_id and not buid:
+        return JsonResponse({'success': False, 'message': 'User is not assigned to a branch or hierarchy unit'}, status=400)
+
+    try:
+        with connection.cursor() as cursor:
+            branch_ids = get_user_branch_ids(cursor, user)
+            placeholders = ', '.join(['%s'] * len(branch_ids))
+
+            # Branch-level CAPs
+            cursor.execute(f"""
+                SELECT
+                    'BRANCH'            AS cap_type,
+                    bf.id               AS feedback_id,
+                    bf.audit_id,
+                    bf.branch_id,
+                    NULL                AS center_id,
+                    NULL                AS client_id,
+                    NULL                AS client_name,
+                    bf.intent_code      AS parameter_code,
+                    bf.intent_title     AS parameter_name,
+                    bf.section_code,
+                    bf.section_name,
+                    bf.answer,
+                    bf.normal_remark    AS remark,
+                    ISNULL(b.Branch, CONCAT('Branch ', bf.branch_id)) AS branch_name,
+                    bf.created_at
+                FROM dbo.audit_branch_checklist_feedback bf
+                LEFT JOIN dbo.VW_Branch_To_GeographicalHierarchy b ON TRY_CAST(bf.branch_id AS INT) = b.BranchID
+                WHERE bf.answer = 'Yes' AND TRY_CAST(bf.branch_id AS INT) in ({placeholders})
+            """, branch_ids)
+            branch_cols = [col[0] for col in cursor.description]
+            branch_rows = cursor.fetchall()
+
+            # Center-level CAPs
+            cursor.execute(f"""
+                SELECT
+                    'CENTER'            AS cap_type,
+                    cf.id               AS feedback_id,
+                    cf.audit_id,
+                    cf.branchid         AS branch_id,
+                    cf.center_id,
+                    NULL                AS client_id,
+                    NULL                AS client_name,
+                    cf.parameter_code,
+                    cf.parameter_name,
+                    NULL                AS section_code,
+                    NULL                AS section_name,
+                    cf.answer,
+                    cf.normal_remark    AS remark,
+                    ISNULL(b.Branch, CONCAT('Branch ', cf.branchid)) AS branch_name,
+                    cf.created_at
+                FROM dbo.audit_center_checklist_feedback cf
+                LEFT JOIN dbo.VW_Branch_To_GeographicalHierarchy b ON TRY_CAST(cf.branchid AS INT) = b.BranchID
+                WHERE cf.answer = 'Yes' AND TRY_CAST(cf.branchid AS INT) in ({placeholders})
+            """, branch_ids)
+            center_rows = cursor.fetchall()
+
+            # Client-level CAPs
+            cursor.execute(f"""
+                SELECT
+                    'CLIENT'            AS cap_type,
+                    clf.id              AS feedback_id,
+                    clf.audit_id,
+                    clf.branch_id,
+                    clf.center_id,
+                    clf.client_id,
+                    clf.client_name,
+                    clf.parameter_code,
+                    clf.parameter_name,
+                    NULL                AS section_code,
+                    NULL                AS section_name,
+                    clf.answer,
+                    clf.remarks         AS remark,
+                    ISNULL(b.Branch, CONCAT('Branch ', clf.branch_id)) AS branch_name,
+                    clf.created_at
+                FROM dbo.audit_client_checklist_feedback clf
+                LEFT JOIN dbo.VW_Branch_To_GeographicalHierarchy b ON TRY_CAST(clf.branch_id AS INT) = b.BranchID
+                WHERE clf.answer = 'Yes' AND TRY_CAST(clf.branch_id AS INT) in ({placeholders})
+            """, branch_ids)
+            client_rows = cursor.fetchall()
+
+        caps = []
+        for row in branch_rows + center_rows + client_rows:
+            cap = dict(zip(branch_cols, row))
+            for k, v in cap.items():
+                if hasattr(v, 'isoformat'):
+                    cap[k] = v.isoformat()
+            caps.append(cap)
+            
+        caps.sort(key=lambda x: x['created_at'], reverse=True)
+
+        return JsonResponse({
+            'success': True,
+            'caps': caps
+        })
+    except Exception as e:
+        log_error(f"get_auditee_caps failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)

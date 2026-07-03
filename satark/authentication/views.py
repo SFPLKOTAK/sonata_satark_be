@@ -162,7 +162,7 @@ def login_view(request):
     role = DB_ROLE_MAPPING.get(db_role_id, 'AUDITEE')
     role_label = db_role_name if db_role_name else ROLE_LABELS.get(role, 'Auditee')
     level = LEVEL_MAPPING.get(role, 'BM')
-    name = usercode.replace('.', ' ').title()
+    name = user.UserName
 
     user_details = {
         'id': user.id,

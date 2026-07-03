@@ -43,6 +43,7 @@ import os
 import logging
 from datetime import date, timedelta
 from typing import List, Dict, Optional
+# pyrefly: ignore [missing-import]
 from openai import OpenAI
 
 # ---------------------------------------------------------------------------
