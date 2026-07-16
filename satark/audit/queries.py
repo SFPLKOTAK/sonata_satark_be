@@ -1919,17 +1919,33 @@ class GetComplianceTicketsQueryHandler(QueryHandler):
                 role_name = role_row[0] if role_row else 'Unknown'
 
 
-                cursor.execute("""select buid from accounts_mst_usertbl where userid=%s""", [query.user_id])
-                buid_row = cursor.fetchone()
-                buid = buid_row[0] if buid_row else 'Unknown'
+                class DummyUser:
+                    def __init__(self, branch_id, buid, butype):
+                        self.BranchID = branch_id
+                        self.Buid = buid
+                        self.BUType = butype
+
+                cursor.execute("""
+                    SELECT BranchID, Buid, BUType 
+                    FROM dbo.accounts_mst_usertbl 
+                    WHERE UserID = %s
+                """, [query.user_id])
+                user_row = cursor.fetchone()
+                if user_row:
+                    user_obj = DummyUser(user_row[0], user_row[1], user_row[2])
+                else:
+                    user_obj = DummyUser(None, None, None)
+
+                branch_ids = get_user_branch_ids(cursor, user_obj)
 
                 # If Auditee, only show their tickets
                 # If Compliance, show all tickets
                 where_clause = ""
                 params = []
                 if role_name not in ['Admin', 'Compliance Head']:
-                    where_clause = "WHERE ct.branchid = %s OR ct.auditor_id = %s"
-                    params = [buid, query.user_id]
+                    placeholders = ', '.join(['%s'] * len(branch_ids))
+                    where_clause = f"WHERE ct.branchid IN ({placeholders}) OR ct.auditor_id = %s"
+                    params = [int(bid) for bid in branch_ids] + [query.user_id]
 
                 # Branch Tickets
                 sql = f"""
