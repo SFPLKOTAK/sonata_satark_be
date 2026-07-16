@@ -1,3 +1,15 @@
+# from django.urls import path
+# from .views import (
+#     get_checklist_points, create_checklist_point, get_report_types, get_assigned_audits, start_branch_audit, end_branch_audit, get_audit_feedback, save_audit_feedback,
+#     get_center_checklist_points, save_center_checklist_point,
+#     get_client_checklist_points, save_client_checklist_point,
+#     view_feedback_file, archive_feedback_file,
+#     get_center_risk_details, get_branch_overview, get_customer_risk_details, get_center_disbursements,
+#     get_center_audit_feedback, save_center_audit_feedback,
+#     view_center_feedback_file, archive_center_feedback_file,
+#     get_client_audit_feedback, save_client_audit_feedback,
+#     get_completed_audits, get_branch_report_details, get_branch_report_excel,
+#     get_auditor_dashboard, get_auditor_caps,
 from django.urls import path
 from .views import (
     get_checklist_points, create_checklist_point, get_report_types, get_assigned_audits, start_branch_audit, end_branch_audit, get_audit_feedback, save_audit_feedback,
@@ -16,6 +28,8 @@ from .views import (
     record_point_decision, finalize_review, get_audit_review_status,
     # Auditee
     get_auditee_dashboard, get_auditee_audits, get_auditee_caps,
+    get_compliance_tickets, send_ticket_alert, resolve_ticket, initiate_ticket_call,
+    submit_ticket_response, view_ticket_response_file
 )
 
 urlpatterns = [
@@ -85,5 +99,12 @@ urlpatterns = [
     path('auditee/dashboard/', get_auditee_dashboard, name='get_auditee_dashboard'),
     path('auditee/audits/', get_auditee_audits, name='get_auditee_audits'),
     path('auditee/caps/', get_auditee_caps, name='get_auditee_caps'),
-]
 
+    # Compliance Tickets
+    path('compliance/tickets/', get_compliance_tickets, name='get_compliance_tickets'),
+    path('compliance/tickets/<int:ticket_id>/alert/', send_ticket_alert, name='send_ticket_alert'),
+    path('compliance/tickets/<int:ticket_id>/resolve/', resolve_ticket, name='resolve_ticket'),
+    path('compliance/tickets/<int:ticket_id>/call/', initiate_ticket_call, name='initiate_ticket_call'),
+    path('compliance/tickets/<int:ticket_id>/respond/', submit_ticket_response, name='submit_ticket_response'),
+    path('compliance/responses/<int:response_id>/file/', view_ticket_response_file, name='view_ticket_response_file'),
+]
