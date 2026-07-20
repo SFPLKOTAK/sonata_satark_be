@@ -374,6 +374,8 @@ def save_audit_feedback(request):
         result = dispatcher.send(command)
         return JsonResponse(result)
     except Exception as e:
+        import traceback
+        logger.error(f"save_audit_feedback FULL ERROR:\n{traceback.format_exc()}")
         return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
 
 
@@ -525,22 +527,25 @@ def save_center_audit_feedback(request):
     user, error_resp = validate_user_view(data.get('token', ''))
     if error_resp: return error_resp
 
-    audit_id = data.get('audit_id')
     center_id = data.get('center_id')
-    branch_id = data.get('branch_id')
-    if not audit_id or not center_id or not branch_id:
-        return JsonResponse({'success': False, 'message': 'Missing required fields'}, status=400)
+    if center_id is None:
+        return JsonResponse({'success': False, 'message': 'center_id is required'}, status=400)
 
     try:
         command = SaveCenterAuditFeedbackCommand(
-            audit_id=audit_id,
             center_id=center_id,
-            branch_id=branch_id,
-            feedback_items=data.get('feedback_items', [])
+            audit_id=data.get('audit_id'),
+            branch_id=data.get('branch_id') or data.get('branchid'),
+            action=data.get('action', 'DRAFT_SAVED'),
+            general_remarks=data.get('general_remarks', ''),
+            feedback_items=data.get('feedback_items', []),
+            user=user
         )
         result = dispatcher.send(command)
         return JsonResponse(result)
     except Exception as e:
+        import traceback
+        logger.error(f"save_center_audit_feedback FULL ERROR:\n{traceback.format_exc()}")
         return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
 
 
@@ -614,26 +619,26 @@ def save_client_audit_feedback(request):
     user, error_resp = validate_user_view(data.get('token', ''))
     if error_resp: return error_resp
 
-    audit_id = data.get('audit_id')
-    center_id = data.get('center_id')
-    branch_id = data.get('branch_id')
     client_id = data.get('client_id')
-    client_name = data.get('client_name')
-    if not audit_id or not center_id or not branch_id or not client_id or not client_name:
-        return JsonResponse({'success': False, 'message': 'Missing required fields'}, status=400)
+    if not client_id:
+        return JsonResponse({'success': False, 'message': 'client_id is required'}, status=400)
 
     try:
         command = SaveClientAuditFeedbackCommand(
-            audit_id=audit_id,
-            center_id=center_id,
-            branch_id=branch_id,
+            audit_id=data.get('audit_id'),
+            branch_id=data.get('branch_id', ''),
+            center_id=data.get('center_id'),
             client_id=client_id,
-            client_name=client_name,
-            feedback_items=data.get('feedback_items', [])
+            client_name=data.get('client_name', ''),
+            action=data.get('action', 'DRAFT_SAVED'),
+            feedback_items=data.get('feedback_items', []),
+            user=user
         )
         result = dispatcher.send(command)
         return JsonResponse(result)
     except Exception as e:
+        import traceback
+        logger.error(f"save_client_audit_feedback FULL ERROR:\n{traceback.format_exc()}")
         return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
 
 

@@ -322,8 +322,8 @@ class EndBranchAuditCommandHandler(CommandHandler):
 
 
 class SaveAuditFeedbackCommand(Command):
-    def __init__(self, branch_id: str, audit_id: int, action: str, general_remarks: str, feedback_items: list, user):
-        self.branch_id = branch_id.strip()
+    def __init__(self, branch_id, audit_id, action: str, general_remarks: str, feedback_items: list, user):
+        self.branch_id = str(branch_id).strip()  # cast to str — payload may send int
         self.audit_id = audit_id
         self.action = action
         self.general_remarks = general_remarks
@@ -340,6 +340,7 @@ class SaveAuditFeedbackCommandHandler(CommandHandler):
         feedback_items = command.feedback_items
         user = command.user
 
+        # Resolve branch_id from name if non-numeric
         try:
             int(branch_id)
         except ValueError:
@@ -351,6 +352,7 @@ class SaveAuditFeedbackCommandHandler(CommandHandler):
             if plan_obj and plan_obj.branch_id:
                 branch_id = str(plan_obj.branch_id)
 
+        # Resolve audit_id if not supplied
         if not audit_id:
             user_id_str = str(user.UserID) if user.UserID is not None else ""
             user_code = user.UserCode or ""
@@ -362,16 +364,11 @@ class SaveAuditFeedbackCommandHandler(CommandHandler):
                 ).first()
             except ValueError:
                 pass
-                
             if not plan:
                 plan = AuditPlanCurrent.objects.filter(
                     Q(branch=branch_id) & (Q(assigned_auditor=user_id_str) | Q(assigned_auditor=user_code))
                 ).first()
-                
-            if plan:
-                audit_id = plan.id
-            else:
-                audit_id = 0
+            audit_id = plan.id if plan else 0
 
         status_to = 'pending'
         if action == 'SUBMITTED':
@@ -386,6 +383,7 @@ class SaveAuditFeedbackCommandHandler(CommandHandler):
         try:
             with transaction.atomic():
                 with connection.cursor() as cursor:
+                    saved_files = {}
                     for item in feedback_items:
                         checklist_id = item.get('checklist_id')
                         section_code = item.get('section_code')
@@ -395,8 +393,8 @@ class SaveAuditFeedbackCommandHandler(CommandHandler):
                         answer = item.get('answer', 'N/A')
                         normal_remark = item.get('normal_remark')
                         confidential_remark = item.get('confidential_remark')
-                        
-                        # Normal file upload
+
+                        # Process normal file
                         normal_file = item.get('normal_file')
                         has_new_normal_file = False
                         normal_file_bytes = None
@@ -405,11 +403,14 @@ class SaveAuditFeedbackCommandHandler(CommandHandler):
                             has_new_normal_file = True
                             normal_file_name = normal_file.get('filename', 'upload.png')
                             base64_str = normal_file.get('base64')
-                            base64_data = base64_str.split(';base64,')[1] if ';base64,' in base64_str else base64_str
+                            if ';base64,' in base64_str:
+                                _, base64_data = base64_str.split(';base64,')
+                            else:
+                                base64_data = base64_str
                             decoded_bytes = base64.b64decode(base64_data)
                             normal_file_bytes, normal_file_name = compress_file_backend(decoded_bytes, normal_file_name)
 
-                        # Confidential file upload
+                        # Process confidential file
                         confidential_file = item.get('confidential_file')
                         has_new_confidential_file = False
                         confidential_file_bytes = None
@@ -418,122 +419,140 @@ class SaveAuditFeedbackCommandHandler(CommandHandler):
                             has_new_confidential_file = True
                             confidential_file_name = confidential_file.get('filename', 'upload_conf.png')
                             base64_str = confidential_file.get('base64')
-                            base64_data = base64_str.split(';base64,')[1] if ';base64,' in base64_str else base64_str
+                            if ';base64,' in base64_str:
+                                _, base64_data = base64_str.split(';base64,')
+                            else:
+                                base64_data = base64_str
                             decoded_bytes = base64.b64decode(base64_data)
                             confidential_file_bytes, confidential_file_name = compress_file_backend(decoded_bytes, confidential_file_name)
 
-                        # Check existing feedback
+                        # Check if feedback record exists — use actual DB columns
                         cursor.execute("""
-                            SELECT id, normal_file_id, confidential_file_id 
+                            SELECT id, normal_file_path, is_confidential_file_present
                             FROM dbo.audit_branch_checklist_feedback
-                            WHERE audit_id = %s AND branch_id = %s AND checklist_id = %s
-                        """, [audit_id, branch_id, checklist_id])
-                        row = cursor.fetchone()
+                            WHERE branch_id = %s AND checklist_id = %s AND audit_id = %s
+                        """, [branch_id, checklist_id, audit_id])
+                        fb_row = cursor.fetchone()
 
-                        if row:
-                            feedback_record_id, existing_normal_fid, existing_confidential_fid = row
-                            
-                            # Insert/Update normal file in DB
-                            if has_new_normal_file:
-                                if existing_normal_fid:
-                                    cursor.execute("""
-                                        UPDATE dbo.audit_branch_checklist_feedback_files
-                                        SET file_name = %s, file_payload = %s
-                                        WHERE file_id = %s
-                                    """, [normal_file_name, normal_file_bytes, existing_normal_fid])
-                                    normal_fid = existing_normal_fid
-                                else:
-                                    cursor.execute("""
-                                        INSERT INTO dbo.audit_branch_checklist_feedback_files (file_name, file_payload)
-                                        VALUES (%s, %s)
-                                    """, [normal_file_name, normal_file_bytes])
-                                    cursor.execute("SELECT @@IDENTITY")
-                                    normal_fid = int(cursor.fetchone()[0])
-                            else:
-                                normal_fid = existing_normal_fid
+                        is_confidential_remark_present = 1 if confidential_remark else 0
+                        is_confidential_file_present = 1 if has_new_confidential_file else (fb_row[2] if fb_row else 0)
 
-                            # Insert/Update confidential file in DB
-                            if has_new_confidential_file:
-                                if existing_confidential_fid:
-                                    cursor.execute("""
-                                        UPDATE dbo.audit_branch_checklist_feedback_confidential_files
-                                        SET file_name = %s, file_payload = %s
-                                        WHERE confidential_file_id = %s
-                                    """, [confidential_file_name, confidential_file_bytes, existing_confidential_fid])
-                                    confidential_fid = existing_confidential_fid
-                                else:
-                                    cursor.execute("""
-                                        INSERT INTO dbo.audit_branch_checklist_feedback_confidential_files (file_name, file_payload)
-                                        VALUES (%s, %s)
-                                    """, [confidential_file_name, confidential_file_bytes])
-                                    cursor.execute("SELECT @@IDENTITY")
-                                    confidential_fid = int(cursor.fetchone()[0])
-                            else:
-                                confidential_fid = existing_confidential_fid
-
+                        if fb_row:
+                            fb_id = fb_row[0]
+                            final_normal_file_path = normal_file_name if has_new_normal_file else fb_row[1]
                             cursor.execute("""
                                 UPDATE dbo.audit_branch_checklist_feedback
                                 SET answer = %s,
                                     normal_remark = %s,
+                                    normal_file_path = %s,
+                                    is_confidential_remark_present = %s,
+                                    is_confidential_file_present = %s,
                                     status = %s,
-                                    confidential_remark = %s,
-                                    normal_file_id = %s,
-                                    confidential_file_id = %s
+                                    last_modified_by = %s,
+                                    audit_id = %s,
+                                    updated_at = GETDATE()
                                 WHERE id = %s
-                            """, [answer, normal_remark, status_to, confidential_remark, normal_fid, confidential_fid, feedback_record_id])
-
+                            """, [answer, normal_remark, final_normal_file_path,
+                                  is_confidential_remark_present, is_confidential_file_present,
+                                  status_to, user.UserID, audit_id, fb_id])
                         else:
-                            # Insert new normal file in DB
-                            normal_fid = None
-                            if has_new_normal_file:
-                                cursor.execute("""
-                                    INSERT INTO dbo.audit_branch_checklist_feedback_files (file_name, file_payload)
-                                    VALUES (%s, %s)
-                                """, [normal_file_name, normal_file_bytes])
-                                cursor.execute("SELECT @@IDENTITY")
-                                normal_fid = int(cursor.fetchone()[0])
-
-                            # Insert new confidential file in DB
-                            confidential_fid = None
-                            if has_new_confidential_file:
-                                cursor.execute("""
-                                    INSERT INTO dbo.audit_branch_checklist_feedback_confidential_files (file_name, file_payload)
-                                    VALUES (%s, %s)
-                                """, [confidential_file_name, confidential_file_bytes])
-                                cursor.execute("SELECT @@IDENTITY")
-                                confidential_fid = int(cursor.fetchone()[0])
-
                             cursor.execute("""
                                 INSERT INTO dbo.audit_branch_checklist_feedback (
-                                    audit_id, branch_id, checklist_id, section_code, section_name,
-                                    intent_code, intent_title, answer, normal_remark, status,
-                                    confidential_remark, normal_file_id, confidential_file_id
-                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                    audit_id, branch_id, auditor_id, checklist_id, section_code, section_name,
+                                    intent_code, intent_title, answer, normal_remark, normal_file_path,
+                                    is_confidential_remark_present, is_confidential_file_present, status,
+                                    last_modified_by, created_at, updated_at
+                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, GETDATE(), GETDATE())
                             """, [
-                                audit_id, branch_id, checklist_id, section_code, section_name,
-                                intent_code, intent_title, answer, normal_remark, status_to,
-                                confidential_remark, normal_fid, confidential_fid
+                                audit_id, branch_id, user.UserID, checklist_id, section_code, section_name,
+                                intent_code, intent_title, answer, normal_remark, normal_file_name,
+                                is_confidential_remark_present, is_confidential_file_present,
+                                status_to, user.UserID
                             ])
+                            cursor.execute("SELECT @@IDENTITY")
+                            fb_id = int(cursor.fetchone()[0])
 
-                    # General Remarks Update
-                    cursor.execute("""
-                        SELECT 1 FROM dbo.audit_branch_general_remarks
-                        WHERE audit_id = %s AND TRY_CAST(branch_id AS INT) = %s
-                    """, [audit_id, branch_id])
-                    rem_exists = cursor.fetchone()
-                    if rem_exists:
-                        cursor.execute("""
-                            UPDATE dbo.audit_branch_general_remarks
-                            SET general_remarks = %s, updated_by = %s, updated_at = GETDATE()
-                            WHERE audit_id = %s AND TRY_CAST(branch_id AS INT) = %s
-                        """, [general_remarks, user.UserID, audit_id, branch_id])
-                    else:
-                        cursor.execute("""
-                            INSERT INTO dbo.audit_branch_general_remarks (audit_id, branch_id, general_remarks, created_by, created_at)
-                            VALUES (%s, %s, %s, %s, GETDATE())
-                        """, [audit_id, branch_id, general_remarks, user.UserID])
+                        # Store normal file binary in dbo.audit_branch_normal_files
+                        new_normal_file_id = None
+                        if has_new_normal_file:
+                            cursor.execute("""
+                                UPDATE dbo.audit_branch_normal_files
+                                SET is_archived = 1, updated_at = GETDATE()
+                                WHERE branch_id = %s AND checklist_id = %s AND is_archived = 0
+                            """, [branch_id, checklist_id])
+                            cursor.execute("""
+                                INSERT INTO dbo.audit_branch_normal_files (
+                                    feedback_id, branch_id, checklist_id, file_name, file_content,
+                                    is_archived, uploaded_by, created_at, updated_at
+                                ) VALUES (%s, %s, %s, %s, %s, 0, %s, GETDATE(), GETDATE())
+                            """, [fb_id, branch_id, checklist_id, normal_file_name, normal_file_bytes, user.UserID])
+                            cursor.execute("SELECT @@IDENTITY")
+                            new_normal_file_id = int(cursor.fetchone()[0])
 
-            return {'success': True, 'message': 'Feedback saved successfully', 'auditId': audit_id}
+                        # Handle confidential remark in dbo.audit_branch_confidential_remarks
+                        if confidential_remark is not None:
+                            cursor.execute("""
+                                SELECT id FROM dbo.audit_branch_confidential_remarks
+                                WHERE branch_id = %s AND checklist_id = %s
+                            """, [branch_id, checklist_id])
+                            cr_row = cursor.fetchone()
+                            if cr_row:
+                                cursor.execute("""
+                                    UPDATE dbo.audit_branch_confidential_remarks
+                                    SET confidential_remark = %s,
+                                        user_id = %s,
+                                        updated_at = GETDATE()
+                                    WHERE id = %s
+                                """, [confidential_remark, user.UserID, cr_row[0]])
+                            else:
+                                cursor.execute("""
+                                    INSERT INTO dbo.audit_branch_confidential_remarks (
+                                        feedback_id, branch_id, checklist_id, confidential_remark,
+                                        user_id, created_at, updated_at
+                                    ) VALUES (%s, %s, %s, %s, %s, GETDATE(), GETDATE())
+                                """, [fb_id, branch_id, checklist_id, confidential_remark, user.UserID])
+
+                        # Store confidential file binary in dbo.audit_branch_confidential_files
+                        new_confidential_file_id = None
+                        if has_new_confidential_file:
+                            cursor.execute("""
+                                UPDATE dbo.audit_branch_confidential_files
+                                SET is_archived = 1, updated_at = GETDATE()
+                                WHERE branch_id = %s AND checklist_id = %s AND is_archived = 0
+                            """, [branch_id, checklist_id])
+                            cursor.execute("""
+                                INSERT INTO dbo.audit_branch_confidential_files (
+                                    feedback_id, branch_id, checklist_id, confidential_file_path,
+                                    file_name, file_content, is_archived, user_id, created_at, updated_at
+                                ) VALUES (%s, %s, %s, NULL, %s, %s, 0, %s, GETDATE(), GETDATE())
+                            """, [fb_id, branch_id, checklist_id, confidential_file_name,
+                                  confidential_file_bytes, user.UserID])
+                            cursor.execute("SELECT @@IDENTITY")
+                            new_confidential_file_id = int(cursor.fetchone()[0])
+
+                        # Build saved_files response
+                        if new_normal_file_id or new_confidential_file_id:
+                            saved_files[checklist_id] = {}
+                            if new_normal_file_id:
+                                saved_files[checklist_id]['normalFile'] = {
+                                    'id': new_normal_file_id,
+                                    'filename': normal_file_name
+                                }
+                            if new_confidential_file_id:
+                                saved_files[checklist_id]['confidentialFile'] = {
+                                    'id': new_confidential_file_id,
+                                    'filename': confidential_file_name
+                                }
+
+                    # General Remarks — log to dbo.audit_activity_log (original pre-CQRS behaviour)
+                    if general_remarks:
+                        cursor.execute("""
+                            INSERT INTO dbo.audit_activity_log (
+                                branch_id, action, status_to, created_by, created_at, remarks
+                            ) VALUES (%s, %s, %s, %s, GETDATE(), %s)
+                        """, [branch_id, action, status_to, user.UserID, general_remarks])
+
+            return {'success': True, 'message': 'Feedback saved successfully', 'auditId': audit_id, 'saved_files': saved_files}
         except Exception as e:
             log_error(f"SaveAuditFeedbackCommandHandler failed: {str(e)}")
             raise e
@@ -590,102 +609,291 @@ class ArchiveFeedbackFileCommandHandler(CommandHandler):
 
 
 class SaveCenterAuditFeedbackCommand(Command):
-    def __init__(self, audit_id: int, center_id: str, branch_id: str, feedback_items: list):
-        self.audit_id = audit_id
+    def __init__(self, center_id, audit_id=None, branch_id=None, action='DRAFT_SAVED', general_remarks='', feedback_items=None, user=None):
         self.center_id = center_id
+        self.audit_id = audit_id
         self.branch_id = branch_id
-        self.feedback_items = feedback_items
+        self.action = action
+        self.general_remarks = general_remarks
+        self.feedback_items = feedback_items or []
+        self.user = user
 
 
 class SaveCenterAuditFeedbackCommandHandler(CommandHandler):
     def execute(self, command: SaveCenterAuditFeedbackCommand) -> dict:
+        center_id_raw = command.center_id
         audit_id = command.audit_id
-        center_id = command.center_id
         branch_id = command.branch_id
-        feedback_items = command.feedback_items
+        action = command.action or 'DRAFT_SAVED'
+        general_remarks = command.general_remarks or ''
+        feedback_items = command.feedback_items or []
+        user = command.user
+
+        if center_id_raw is None:
+            return {'success': False, 'message': 'center_id is required'}
+
+        try:
+            center_id = int(center_id_raw)
+        except ValueError:
+            return {'success': False, 'message': 'center_id must be a valid integer'}
+
+        # Resolve audit_id if not explicitly provided
+        if not audit_id and user:
+            user_id_str = str(user.UserID) if user.UserID is not None else ""
+            user_code = user.UserCode or ""
+            branch_name = None
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT TOP 1 BranchName 
+                    FROM CenterRiskScore 
+                    WHERE CenterID = %s OR CenterID = %s
+                """, [str(center_id), center_id])
+                row = cursor.fetchone()
+                if row:
+                    branch_name = row[0]
+            if branch_name:
+                plan = AuditPlanCurrent.objects.filter(
+                    Q(branch=branch_name) & (Q(assigned_auditor=user_id_str) | Q(assigned_auditor=user_code))
+                ).first()
+                if plan:
+                    audit_id = plan.id
+                else:
+                    audit_id = 0
+            else:
+                audit_id = 0
+
+        # Resolve branch_id if not explicitly provided
+        if not branch_id:
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT TOP 1 BRANCHID 
+                    FROM CenterRiskScore 
+                    WHERE CenterID = %s OR CenterID = %s
+                """, [str(center_id), center_id])
+                row = cursor.fetchone()
+                if row:
+                    branch_id = row[0]
+
+        # Determine status to set
+        status_to = 'pending'
+        if action == 'SUBMITTED':
+            status_to = 'submitted'
+        elif action == 'REJECTED':
+            status_to = 'rejected'
+        elif action == 'IN_REVIEW':
+            status_to = 'inreview'
+        elif action == 'DRAFT_SAVED':
+            status_to = 'pending'
+
+        user_id = user.UserID if user else None
 
         try:
             with transaction.atomic():
                 with connection.cursor() as cursor:
+                    saved_files = {}
                     for item in feedback_items:
                         checklist_id = item.get('checklist_id')
-                        param_code = item.get('parameter_code')
-                        param_name = item.get('parameter_name')
+                        parameter_code = item.get('parameter_code', '')
+                        parameter_name = item.get('parameter_name', '')
                         answer = item.get('answer', 'N/A')
-                        normal_remark = item.get('normal_remark', '')
-                        max_score = int(item.get('max_score', 0))
-                        status = item.get('status', 'pending')
-
-                        # Handle base64 file data
-                        file_data = item.get('normal_file')
-                        has_new_file = False
-                        file_bytes = None
-                        file_name = None
-                        if file_data and isinstance(file_data, dict) and file_data.get('base64'):
-                            has_new_file = True
-                            file_name = file_data.get('filename', 'upload_center.png')
-                            base64_str = file_data.get('base64')
+                        normal_remark = item.get('normal_remark')
+                        confidential_remark = item.get('confidential_remark')
+                        
+                        # Process normal file data
+                        normal_file = item.get('normal_file')
+                        has_new_normal_file = False
+                        normal_file_bytes = None
+                        normal_file_name = None
+                        if normal_file and isinstance(normal_file, dict) and normal_file.get('base64'):
+                            has_new_normal_file = True
+                            normal_file_name = normal_file.get('filename', 'upload.png')
+                            base64_str = normal_file.get('base64')
                             base64_data = base64_str.split(';base64,')[1] if ';base64,' in base64_str else base64_str
                             decoded_bytes = base64.b64decode(base64_data)
-                            file_bytes, file_name = compress_file_backend(decoded_bytes, file_name)
+                            normal_file_bytes, normal_file_name = compress_file_backend(decoded_bytes, normal_file_name)
 
-                        # Existing row check
+                        # Process confidential file data
+                        confidential_file = item.get('confidential_file')
+                        has_new_confidential_file = False
+                        confidential_file_bytes = None
+                        confidential_file_name = None
+                        if confidential_file and isinstance(confidential_file, dict) and confidential_file.get('base64'):
+                            has_new_confidential_file = True
+                            confidential_file_name = confidential_file.get('filename', 'upload_conf.png')
+                            base64_str = confidential_file.get('base64')
+                            base64_data = base64_str.split(';base64,')[1] if ';base64,' in base64_str else base64_str
+                            decoded_bytes = base64.b64decode(base64_data)
+                            confidential_file_bytes, confidential_file_name = compress_file_backend(decoded_bytes, confidential_file_name)
+
+                        # Process evidence image data
+                        evidence_image = item.get('evidence_image')
+                        has_new_evidence_image = False
+                        evidence_image_bytes = None
+                        evidence_image_name = None
+                        evidence_latitude = None
+                        evidence_longitude = None
+                        evidence_text = None
+                        if evidence_image and isinstance(evidence_image, dict) and evidence_image.get('base64'):
+                            has_new_evidence_image = True
+                            evidence_image_name = evidence_image.get('filename', 'captured.jpg')
+                            evidence_latitude = evidence_image.get('latitude')
+                            evidence_longitude = evidence_image.get('longitude')
+                            evidence_text = evidence_image.get('image_text')
+                            base64_str = evidence_image.get('base64')
+                            base64_data = base64_str.split(';base64,')[1] if ';base64,' in base64_str else base64_str
+                            decoded_bytes = base64.b64decode(base64_data)
+                            evidence_image_bytes, evidence_image_name = compress_file_backend(decoded_bytes, evidence_image_name)
+
+                        # Check if record exists in main feedback table
                         cursor.execute("""
-                            SELECT id, file_id 
-                            FROM dbo.audit_center_checklist_feedback
-                            WHERE audit_id = %s AND center_id = %s AND center_checklist_id = %s
-                        """, [audit_id, center_id, checklist_id])
-                        row = cursor.fetchone()
+                            SELECT id, normal_file_path, is_confidential_file_present 
+                            FROM dbo.audit_center_checklist_feedback 
+                            WHERE center_id = %s AND center_checklist_id = %s AND audit_id = %s
+                        """, [center_id, checklist_id, audit_id])
+                        fb_row = cursor.fetchone()
 
-                        if row:
-                            record_id, existing_fid = row
-                            
-                            if has_new_file:
-                                if existing_fid:
-                                    cursor.execute("""
-                                        UPDATE dbo.audit_center_checklist_feedback_files
-                                        SET file_name = %s, file_payload = %s
-                                        WHERE file_id = %s
-                                    """, [file_name, file_bytes, existing_fid])
-                                    fid = existing_fid
-                                else:
-                                    cursor.execute("""
-                                        INSERT INTO dbo.audit_center_checklist_feedback_files (file_name, file_payload)
-                                        VALUES (%s, %s)
-                                    """, [file_name, file_bytes])
-                                    cursor.execute("SELECT @@IDENTITY")
-                                    fid = int(cursor.fetchone()[0])
-                            else:
-                                fid = existing_fid
+                        is_confidential_remark_present = 1 if confidential_remark else 0
+                        is_confidential_file_present = 1 if has_new_confidential_file else (fb_row[2] if fb_row else 0)
 
+                        if fb_row:
+                            fb_id = fb_row[0]
+                            final_normal_file_path = normal_file_name if has_new_normal_file else fb_row[1]
                             cursor.execute("""
                                 UPDATE dbo.audit_center_checklist_feedback
                                 SET answer = %s,
                                     normal_remark = %s,
+                                    normal_file_path = %s,
+                                    is_confidential_remark_present = %s,
+                                    is_confidential_file_present = %s,
                                     status = %s,
-                                    max_score = %s,
-                                    file_id = %s,
-                                    file_name = %s
+                                    last_modified_by = %s,
+                                    branchid = %s,
+                                    audit_id = %s,
+                                    updated_at = GETDATE()
                                 WHERE id = %s
-                            """, [answer, normal_remark, status, max_score, fid, file_name if has_new_file else item.get('normal_file', {}).get('filename') if item.get('normal_file') else None, record_id])
+                            """, [answer, normal_remark, final_normal_file_path, is_confidential_remark_present, is_confidential_file_present, status_to, user_id, branch_id, audit_id, fb_id])
                         else:
-                            fid = None
-                            if has_new_file:
-                                cursor.execute("""
-                                    INSERT INTO dbo.audit_center_checklist_feedback_files (file_name, file_payload)
-                                    VALUES (%s, %s)
-                                """, [file_name, file_bytes])
-                                cursor.execute("SELECT @@IDENTITY")
-                                fid = int(cursor.fetchone()[0])
-
                             cursor.execute("""
                                 INSERT INTO dbo.audit_center_checklist_feedback (
-                                    audit_id, branchid, center_id, center_checklist_id, parameter_code, 
-                                    parameter_name, answer, normal_remark, status, max_score, file_id, file_name
-                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            """, [audit_id, branch_id, center_id, checklist_id, param_code, param_name, answer, normal_remark, status, max_score, fid, file_name])
+                                    audit_id, center_id, auditor_id, center_checklist_id, parameter_code, parameter_name,
+                                    answer, normal_remark, normal_file_path,
+                                    is_confidential_remark_present, is_confidential_file_present, status, last_modified_by,
+                                    branchid, created_at, updated_at
+                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, GETDATE(), GETDATE())
+                            """, [
+                                audit_id, center_id, user_id, checklist_id, parameter_code, parameter_name,
+                                answer, normal_remark, normal_file_name,
+                                is_confidential_remark_present, is_confidential_file_present, status_to, user_id,
+                                branch_id
+                            ])
+                            cursor.execute("SELECT @@IDENTITY")
+                            fb_id = int(cursor.fetchone()[0])
 
-            return {'success': True, 'message': 'Center feedback saved successfully'}
+                        # Store normal file as binary in separate table
+                        new_normal_file_id = None
+                        if has_new_normal_file:
+                            cursor.execute("""
+                                UPDATE dbo.audit_center_normal_files
+                                SET is_archived = 1, updated_at = GETDATE()
+                                WHERE center_id = %s AND center_checklist_id = %s AND is_archived = 0
+                            """, [center_id, checklist_id])
+                            cursor.execute("""
+                                INSERT INTO dbo.audit_center_normal_files (
+                                    feedback_id, center_id, center_checklist_id, file_name, file_content, is_archived, uploaded_by, created_at, updated_at
+                                ) VALUES (%s, %s, %s, %s, %s, 0, %s, GETDATE(), GETDATE())
+                            """, [fb_id, center_id, checklist_id, normal_file_name, normal_file_bytes, user_id])
+                            cursor.execute("SELECT @@IDENTITY")
+                            new_normal_file_id = int(cursor.fetchone()[0])
+
+                        # Process confidential remark
+                        if confidential_remark is not None:
+                            cursor.execute("""
+                                SELECT id FROM dbo.audit_center_confidential_remarks
+                                WHERE center_id = %s AND center_checklist_id = %s
+                            """, [center_id, checklist_id])
+                            cr_row = cursor.fetchone()
+                            if cr_row:
+                                cursor.execute("""
+                                    UPDATE dbo.audit_center_confidential_remarks
+                                    SET confidential_remark = %s,
+                                        user_id = %s,
+                                        updated_at = GETDATE()
+                                    WHERE id = %s
+                                """, [confidential_remark, user_id, cr_row[0]])
+                            else:
+                                cursor.execute("""
+                                    INSERT INTO dbo.audit_center_confidential_remarks (
+                                        feedback_id, center_id, center_checklist_id, confidential_remark, user_id, created_at, updated_at
+                                    ) VALUES (%s, %s, %s, %s, %s, GETDATE(), GETDATE())
+                                """, [fb_id, center_id, checklist_id, confidential_remark, user_id])
+
+                        # Store confidential file as binary in database
+                        new_confidential_file_id = None
+                        if has_new_confidential_file:
+                            cursor.execute("""
+                                UPDATE dbo.audit_center_confidential_files
+                                SET is_archived = 1, updated_at = GETDATE()
+                                WHERE center_id = %s AND center_checklist_id = %s AND is_archived = 0
+                            """, [center_id, checklist_id])
+                            cursor.execute("""
+                                INSERT INTO dbo.audit_center_confidential_files (
+                                    feedback_id, center_id, center_checklist_id, confidential_file_path, file_name, file_content, is_archived, user_id, created_at, updated_at
+                                ) VALUES (%s, %s, %s, NULL, %s, %s, 0, %s, GETDATE(), GETDATE())
+                            """, [fb_id, center_id, checklist_id, confidential_file_name, confidential_file_bytes, user_id])
+                            cursor.execute("SELECT @@IDENTITY")
+                            new_confidential_file_id = int(cursor.fetchone()[0])
+
+                        # Store evidence captured image in database
+                        new_evidence_file_id = None
+                        if has_new_evidence_image:
+                            cursor.execute("""
+                                UPDATE dbo.audit_center_evidence
+                                SET is_archived = 1, updated_at = GETDATE()
+                                WHERE center_id = %s AND center_checklist_id = %s AND is_archived = 0
+                            """, [center_id, checklist_id])
+                            cursor.execute("""
+                                INSERT INTO dbo.audit_center_evidence (
+                                    feedback_id, center_id, center_checklist_id, file_name, file_content,
+                                    latitude, longitude, image_text, is_archived, uploaded_by, created_at, updated_at
+                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 0, %s, GETDATE(), GETDATE())
+                            """, [fb_id, center_id, checklist_id, evidence_image_name, evidence_image_bytes,
+                                  evidence_latitude, evidence_longitude, evidence_text, user_id])
+                            cursor.execute("SELECT @@IDENTITY")
+                            new_evidence_file_id = int(cursor.fetchone()[0])
+
+                        if new_normal_file_id or new_confidential_file_id or new_evidence_file_id:
+                            saved_files[checklist_id] = {}
+                            if new_normal_file_id:
+                                saved_files[checklist_id]['normalFile'] = {
+                                    'id': new_normal_file_id,
+                                    'filename': normal_file_name
+                                }
+                            if new_confidential_file_id:
+                                saved_files[checklist_id]['confidentialFile'] = {
+                                    'id': new_confidential_file_id,
+                                    'filename': confidential_file_name
+                                }
+                            if new_evidence_file_id:
+                                saved_files[checklist_id]['evidenceImage'] = {
+                                    'id': new_evidence_file_id,
+                                    'filename': evidence_image_name,
+                                    'latitude': evidence_latitude,
+                                    'longitude': evidence_longitude,
+                                    'imageText': evidence_text
+                                }
+
+                    if general_remarks:
+                        cursor.execute("""
+                            INSERT INTO dbo.audit_center_activity_log (
+                                center_id, action, status_to, created_by, created_at, remarks
+                            ) VALUES (%s, %s, %s, %s, GETDATE(), %s)
+                        """, [center_id, action, status_to, user_id, general_remarks])
+
+            return {
+                'success': True,
+                'message': 'Center checklist feedback saved successfully',
+                'saved_files': saved_files
+            }
         except Exception as e:
             log_error(f"SaveCenterAuditFeedbackCommandHandler failed: {str(e)}")
             raise e
@@ -722,61 +930,109 @@ class ArchiveCenterFeedbackFileCommandHandler(CommandHandler):
 
 
 class SaveClientAuditFeedbackCommand(Command):
-    def __init__(self, audit_id: int, center_id: str, branch_id: str, client_id: str, client_name: str, feedback_items: list):
+    def __init__(self, audit_id=None, branch_id=None, center_id=None, client_id=None, client_name='', action='DRAFT_SAVED', feedback_items=None, user=None):
         self.audit_id = audit_id
-        self.center_id = center_id
         self.branch_id = branch_id
+        self.center_id = center_id
         self.client_id = client_id
         self.client_name = client_name
-        self.feedback_items = feedback_items
+        self.action = action
+        self.feedback_items = feedback_items or []
+        self.user = user
 
 
 class SaveClientAuditFeedbackCommandHandler(CommandHandler):
     def execute(self, command: SaveClientAuditFeedbackCommand) -> dict:
         audit_id = command.audit_id
-        center_id = command.center_id
+        center_id_raw = command.center_id
         branch_id = command.branch_id
         client_id = command.client_id
         client_name = command.client_name
-        feedback_items = command.feedback_items
+        action = command.action or 'DRAFT_SAVED'
+        feedback_items = command.feedback_items or []
+        user = command.user
+
+        if not client_id:
+            return {'success': False, 'message': 'client_id is required'}
+
+        try:
+            center_id = int(center_id_raw) if center_id_raw is not None else None
+        except (ValueError, TypeError):
+            center_id = None
+
+        status_to = 'pending'
+        if action == 'SUBMITTED':
+            status_to = 'submitted'
+        elif action == 'DRAFT_SAVED':
+            status_to = 'pending'
+
+        user_id = user.UserID if user else None
 
         try:
             with transaction.atomic():
                 with connection.cursor() as cursor:
                     for item in feedback_items:
-                        checklist_id = item.get('checklist_id')
-                        param_code = item.get('parameter_code')
-                        param_name = item.get('parameter_name')
+                        checklist_id = item.get('client_checklist_id') or item.get('checklist_id')
+                        parameter_code = item.get('parameter_code', '')
+                        parameter_name = item.get('parameter_name', '')
                         answer = item.get('answer', 'N/A')
                         remarks = item.get('remarks', '')
-                        max_score = int(item.get('max_score', 0))
-                        status = item.get('status', 'pending')
 
-                        cursor.execute("""
-                            SELECT id 
-                            FROM dbo.audit_client_checklist_feedback
-                            WHERE audit_id = %s AND center_id = %s AND client_id = %s AND client_checklist_id = %s
-                        """, [audit_id, center_id, client_id, checklist_id])
-                        row = cursor.fetchone()
+                        if audit_id is not None:
+                            cursor.execute("""
+                                SELECT id
+                                FROM dbo.audit_client_checklist_feedback
+                                WHERE client_id = %s AND client_checklist_id = %s AND audit_id = %s
+                            """, [client_id, checklist_id, audit_id])
+                        else:
+                            cursor.execute("""
+                                SELECT id
+                                FROM dbo.audit_client_checklist_feedback
+                                WHERE client_id = %s AND client_checklist_id = %s AND audit_id IS NULL
+                            """, [client_id, checklist_id])
+                        existing = cursor.fetchone()
 
-                        if row:
+                        if existing:
                             cursor.execute("""
                                 UPDATE dbo.audit_client_checklist_feedback
                                 SET answer = %s,
                                     remarks = %s,
                                     status = %s,
-                                    max_score = %s
+                                    audit_id = %s,
+                                    branch_id = %s,
+                                    center_id = %s,
+                                    client_name = %s,
+                                    last_modified_by = %s,
+                                    updated_at = GETDATE()
                                 WHERE id = %s
-                            """, [answer, remarks, status, max_score, row[0]])
+                            """, [
+                                answer, remarks, status_to,
+                                audit_id, branch_id, center_id,
+                                client_name, user_id, existing[0]
+                            ])
                         else:
                             cursor.execute("""
                                 INSERT INTO dbo.audit_client_checklist_feedback (
-                                    audit_id, branch_id, center_id, client_id, client_name, client_checklist_id,
-                                    parameter_code, parameter_name, answer, remarks, status, max_score
-                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            """, [audit_id, branch_id, center_id, client_id, client_name, checklist_id, param_code, param_name, answer, remarks, status, max_score])
+                                    audit_id, branch_id, center_id,
+                                    client_id, client_name, auditor_id,
+                                    client_checklist_id, parameter_code, parameter_name,
+                                    answer, remarks, status, last_modified_by,
+                                    created_at, updated_at
+                                ) VALUES (
+                                    %s, %s, %s,
+                                    %s, %s, %s,
+                                    %s, %s, %s,
+                                    %s, %s, %s, %s,
+                                    GETDATE(), GETDATE()
+                                )
+                            """, [
+                                audit_id, branch_id, center_id,
+                                client_id, client_name, user_id,
+                                checklist_id, parameter_code, parameter_name,
+                                answer, remarks, status_to, user_id
+                            ])
 
-            return {'success': True, 'message': 'Client feedback saved successfully'}
+            return {'success': True, 'message': f'Client checklist feedback {action.lower()} successfully'}
         except Exception as e:
             log_error(f"SaveClientAuditFeedbackCommandHandler failed: {str(e)}")
             raise e
