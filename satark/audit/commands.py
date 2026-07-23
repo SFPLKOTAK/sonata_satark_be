@@ -426,6 +426,37 @@ class SaveAuditFeedbackCommandHandler(CommandHandler):
                             decoded_bytes = base64.b64decode(base64_data)
                             confidential_file_bytes, confidential_file_name = compress_file_backend(decoded_bytes, confidential_file_name)
 
+                        # Parse subItems counts from normal_remark if present
+                        total_sub_points = None
+                        sub_points_yes_count = None
+                        sub_points_no_count = None
+
+                        if normal_remark and isinstance(normal_remark, str) and '_isSubItems' in normal_remark:
+                            try:
+                                parsed_rmk = json.loads(normal_remark)
+                                if isinstance(parsed_rmk, dict) and parsed_rmk.get('_isSubItems'):
+                                    sub_map = parsed_rmk.get('subItems')
+                                    if isinstance(sub_map, dict) and sub_map:
+                                        y_cnt = 0
+                                        n_cnt = 0
+                                        tot_cnt = 0
+                                        for sub_obj in sub_map.values():
+                                            if isinstance(sub_obj, dict):
+                                                ans = (sub_obj.get('answer') or '').strip().lower()
+                                                if ans == 'yes':
+                                                    y_cnt += 1
+                                                    tot_cnt += 1
+                                                elif ans == 'no':
+                                                    n_cnt += 1
+                                                    tot_cnt += 1
+                                                elif ans in ['n/a', 'na']:
+                                                    tot_cnt += 1
+                                        total_sub_points = tot_cnt
+                                        sub_points_yes_count = y_cnt
+                                        sub_points_no_count = n_cnt
+                            except Exception as parse_err:
+                                log_error(f"SaveAuditFeedbackCommandHandler subItems parse error: {str(parse_err)}")
+
                         # Check if feedback record exists — use actual DB columns
                         cursor.execute("""
                             SELECT id, normal_file_path, is_confidential_file_present
@@ -450,24 +481,30 @@ class SaveAuditFeedbackCommandHandler(CommandHandler):
                                     status = %s,
                                     last_modified_by = %s,
                                     audit_id = %s,
+                                    total_sub_points = %s,
+                                    sub_points_yes_count = %s,
+                                    sub_points_no_count = %s,
                                     updated_at = GETDATE()
                                 WHERE id = %s
                             """, [answer, normal_remark, final_normal_file_path,
                                   is_confidential_remark_present, is_confidential_file_present,
-                                  status_to, user.UserID, audit_id, fb_id])
+                                  status_to, user.UserID, audit_id,
+                                  total_sub_points, sub_points_yes_count, sub_points_no_count, fb_id])
                         else:
                             cursor.execute("""
                                 INSERT INTO dbo.audit_branch_checklist_feedback (
                                     audit_id, branch_id, auditor_id, checklist_id, section_code, section_name,
                                     intent_code, intent_title, answer, normal_remark, normal_file_path,
                                     is_confidential_remark_present, is_confidential_file_present, status,
+                                    total_sub_points, sub_points_yes_count, sub_points_no_count,
                                     last_modified_by, created_at, updated_at
-                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, GETDATE(), GETDATE())
+                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, GETDATE(), GETDATE())
                             """, [
                                 audit_id, branch_id, user.UserID, checklist_id, section_code, section_name,
                                 intent_code, intent_title, answer, normal_remark, normal_file_name,
                                 is_confidential_remark_present, is_confidential_file_present,
-                                status_to, user.UserID
+                                status_to, total_sub_points, sub_points_yes_count, sub_points_no_count,
+                                user.UserID
                             ])
                             cursor.execute("SELECT @@IDENTITY")
                             fb_id = int(cursor.fetchone()[0])
@@ -1084,57 +1121,73 @@ class SubmitForReviewCommandHandler(CommandHandler):
         try:
             with transaction.atomic():
                 with connection.cursor() as cursor:
-                    # 1. Fetch current review details or insert new master
-                    cursor.execute("SELECT review_id, status, current_cycle FROM dbo.audit_review_master WHERE audit_id = %s", [audit_id])
-                    row = cursor.fetchone()
-                    
-                    if row:
-                        rev_id, cur_status, cycle = row
-                        # Only allow submit if review is rejected or initial
-                        if cur_status not in ('rejected_l1', 'rejected_l2', 'not_started', 'pending_submission'):
-                            return {'success': False, 'message': f'Cannot submit review in current status: {cur_status}'}
-                        
-                        next_cycle = cycle + 1
-                        next_status = 'submitted_l1'
-                        
-                        # Fetch the designated L1 reviewer for this auditor
-                        cursor.execute("""
-                            SELECT mur.ReportToID 
-                            FROM dbo.map_userRole mur
-                            WHERE mur.UserID = %s AND mur.IsActive = 1
-                        """, [user.UserID])
-                        l1_row = cursor.fetchone()
-                        l1_reviewer = l1_row[0] if l1_row else None
-                        
-                        cursor.execute("""
-                            UPDATE dbo.audit_review_master
-                            SET status = %s,
-                                current_cycle = %s,
-                                assigned_to_user_id = %s,
-                                updated_at = GETDATE()
-                            WHERE review_id = %s
-                        """, [next_status, next_cycle, l1_reviewer, rev_id])
-                    else:
-                        # Fetch designated L1 reviewer
-                        cursor.execute("""
-                            SELECT mur.ReportToID 
-                            FROM dbo.map_userRole mur
-                            WHERE mur.UserID = %s AND mur.IsActive = 1
-                        """, [user.UserID])
-                        l1_row = cursor.fetchone()
-                        l1_reviewer = l1_row[0] if l1_row else None
-
-                        cursor.execute("""
-                            INSERT INTO dbo.audit_review_master (audit_id, status, current_cycle, assigned_to_user_id, created_at, updated_at)
-                            VALUES (%s, 'submitted_l1', 1, %s, GETDATE(), GETDATE())
-                        """, [audit_id, l1_reviewer])
-
-                    # 5. Set branch progress status
+                    # 1. Fetch branch_id and current progress from dbo.audit_branch_progress
                     cursor.execute("""
-                        UPDATE dbo.audit_branch_progress
-                        SET audit_status = 'in-review'
+                        SELECT audit_branch_id, current_cycle_no, audit_status
+                        FROM dbo.audit_branch_progress
                         WHERE audit_id = %s
                     """, [audit_id])
+                    p_row = cursor.fetchone()
+
+                    branch_id = None
+                    current_cycle_no = 0
+                    if p_row:
+                        branch_id = p_row[0]
+                        current_cycle_no = p_row[1] or 0
+
+                    if not branch_id:
+                        plan = AuditPlanCurrent.objects.filter(id=audit_id).first()
+                        if plan:
+                            branch_id = plan.branch_id
+
+                    # 2. Resolve reviewer_id for this auditor/branch
+                    reviewer_id = None
+                    if branch_id:
+                        try:
+                            cursor.execute("""
+                                SELECT TOP 1 division_head_userid, zonal_userid
+                                FROM dbo.VW_Branch_To_GeographicalHierarchy_head_audit
+                                WHERE division_buid = %s OR fa_buid = %s
+                            """, [branch_id, branch_id])
+                            rev_row = cursor.fetchone()
+                            if rev_row:
+                                reviewer_id = rev_row[0] or rev_row[1]
+                        except Exception:
+                            reviewer_id = None
+
+                    # 3. Create review cycle entry in dbo.audit_branch_review_cycle
+                    next_cycle_no = (current_cycle_no or 0) + 1
+
+                    cursor.execute("""
+                        INSERT INTO dbo.audit_branch_review_cycle (
+                            audit_id, branch_id, cycle_no, submitted_by, submitted_at,
+                            reviewer_id, outcome, created_at, updated_at
+                        ) VALUES (%s, %s, %s, %s, GETDATE(), %s, 'submitted_l1', GETDATE(), GETDATE())
+                    """, [audit_id, branch_id, next_cycle_no, user.UserID, reviewer_id])
+
+                    # 4. Update audit_branch_progress
+                    if p_row:
+                        cursor.execute("""
+                            UPDATE dbo.audit_branch_progress
+                            SET audit_status = 'in-review',
+                                audit_pending_with = %s,
+                                current_cycle_no = %s
+                            WHERE audit_id = %s
+                        """, [reviewer_id, next_cycle_no, audit_id])
+                    else:
+                        cursor.execute("""
+                            INSERT INTO dbo.audit_branch_progress (
+                                audit_id, audit_branch_id, audit_assigned_to, audit_status,
+                                audit_pending_with, current_cycle_no
+                            ) VALUES (%s, %s, %s, 'in-review', %s, %s)
+                        """, [audit_id, branch_id, user.UserID, reviewer_id, next_cycle_no])
+
+                    # 5. Log activity in dbo.audit_activity_log
+                    cursor.execute("""
+                        INSERT INTO dbo.audit_activity_log (
+                            branch_id, action, status_to, created_by, created_at, remarks
+                        ) VALUES (%s, 'SUBMITTED', 'in-review', %s, GETDATE(), 'Audit submitted for review')
+                    """, [branch_id, user.UserID])
 
             return {'success': True, 'message': 'Audit review submitted successfully'}
         except Exception as e:
@@ -1143,38 +1196,100 @@ class SubmitForReviewCommandHandler(CommandHandler):
 
 
 class RecordPointDecisionCommand(Command):
-    def __init__(self, audit_id: int, feedback_id: int, point_type: str, decision: str, remark: str, user):
-        self.audit_id = audit_id
+    def __init__(self, feedback_id: int, decision: str, entity_type: str = 'branch', review_remark: str = '', audit_id: int = None, user = None):
         self.feedback_id = feedback_id
-        self.point_type = point_type
         self.decision = decision
-        self.remark = remark
+        self.entity_type = entity_type or 'branch'
+        self.review_remark = review_remark or ''
+        self.audit_id = audit_id
         self.user = user
 
 
 class RecordPointDecisionCommandHandler(CommandHandler):
     def execute(self, command: RecordPointDecisionCommand) -> dict:
-        audit_id = command.audit_id
         feedback_id = command.feedback_id
-        point_type = command.point_type
         decision = command.decision
-        remark = command.remark
+        point_type = (command.entity_type or 'branch').lower()
+        review_remark = command.review_remark
+        audit_id = command.audit_id
         user = command.user
 
-        tbl_log = f"dbo.audit_{point_type.lower()}_checklist_review_log"
+        tbl_feedback = f"dbo.audit_{point_type}_checklist_feedback"
+        tbl_log = f"dbo.audit_{point_type}_checklist_review_log"
+
         try:
             with transaction.atomic():
                 with connection.cursor() as cursor:
-                    # 1. Fetch current review cycle
-                    cursor.execute("SELECT current_cycle FROM dbo.audit_review_master WHERE audit_id = %s", [audit_id])
-                    row = cursor.fetchone()
-                    cycle = row[0] if row else 1
-
-                    # 2. Insert into decision log
+                    # 1. Update review_status and review_remark directly on feedback record
                     cursor.execute(f"""
-                        INSERT INTO {tbl_log} (audit_id, feedback_id, cycle_id, reviewer_user_id, decision, review_remark, created_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, GETDATE())
-                    """, [audit_id, feedback_id, cycle, user.UserID, decision, remark])
+                        UPDATE {tbl_feedback}
+                        SET review_status = %s,
+                            review_remark = %s,
+                            reviewed_by = %s,
+                            reviewed_at = GETDATE()
+                        WHERE id = %s
+                    """, [decision, review_remark, user.UserID, feedback_id])
+
+                    # 2. Select feedback record fields safely matching entity schema
+                    branch_id, center_id, client_id = None, None, None
+                    if point_type == 'center':
+                        cursor.execute(f"SELECT audit_id, branchid, center_id FROM {tbl_feedback} WHERE id = %s", [feedback_id])
+                        fb_row = cursor.fetchone()
+                        if fb_row:
+                            if not audit_id: audit_id = fb_row[0]
+                            branch_id = fb_row[1]
+                            center_id = fb_row[2]
+                    elif point_type == 'client':
+                        cursor.execute(f"SELECT audit_id, branch_id, center_id, client_id FROM {tbl_feedback} WHERE id = %s", [feedback_id])
+                        fb_row = cursor.fetchone()
+                        if fb_row:
+                            if not audit_id: audit_id = fb_row[0]
+                            branch_id = fb_row[1]
+                            center_id = fb_row[2]
+                            client_id = fb_row[3]
+                    else:
+                        cursor.execute(f"SELECT audit_id, branch_id FROM {tbl_feedback} WHERE id = %s", [feedback_id])
+                        fb_row = cursor.fetchone()
+                        if fb_row:
+                            if not audit_id: audit_id = fb_row[0]
+                            branch_id = fb_row[1]
+
+                    # 3. Fetch latest cycle_id for this audit
+                    cycle_id = None
+                    if audit_id:
+                        cursor.execute("""
+                            SELECT TOP 1 cycle_id, branch_id
+                            FROM dbo.audit_branch_review_cycle
+                            WHERE audit_id = %s
+                            ORDER BY cycle_no DESC
+                        """, [audit_id])
+                        rc_row = cursor.fetchone()
+                        if rc_row:
+                            cycle_id = rc_row[0]
+                            if not branch_id:
+                                branch_id = rc_row[1]
+
+                    # 4. Insert into decision log table based on entity_type schema
+                    try:
+                        if point_type == 'branch':
+                            cursor.execute(f"""
+                                INSERT INTO {tbl_log} (audit_id, feedback_id, cycle_id, branch_id, reviewer_id, decision, review_remark, decided_at)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, GETDATE())
+                            """, [audit_id, feedback_id, cycle_id, branch_id, user.UserID, decision, review_remark])
+                        elif point_type == 'center':
+                            cursor.execute(f"""
+                                INSERT INTO {tbl_log} (audit_id, feedback_id, cycle_id, branch_id, center_id, reviewer_id, decision, review_remark, decided_at)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, GETDATE())
+                            """, [audit_id, feedback_id, cycle_id, branch_id, center_id, user.UserID, decision, review_remark])
+                        elif point_type == 'client':
+                            digits = ''.join(filter(str.isdigit, str(client_id))) if client_id else ''
+                            client_id_int = int(digits) if digits else 0
+                            cursor.execute(f"""
+                                INSERT INTO {tbl_log} (audit_id, feedback_id, cycle_id, branch_id, center_id, client_id, reviewer_id, decision, review_remark, decided_at)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, GETDATE())
+                            """, [audit_id, feedback_id, cycle_id, branch_id, center_id, client_id_int, user.UserID, decision, review_remark])
+                    except Exception as log_ex:
+                        log_error(f"Could not insert into {tbl_log}: {str(log_ex)}")
 
             return {'success': True, 'message': 'Point decision recorded successfully'}
         except Exception as e:
@@ -1183,79 +1298,90 @@ class RecordPointDecisionCommandHandler(CommandHandler):
 
 
 class FinalizeReviewCommand(Command):
-    def __init__(self, audit_id: int, action: str, user):
+    def __init__(self, audit_id: int, branch_id: int = None, action: str = None, user = None):
         self.audit_id = audit_id
-        self.action = action  # 'APPROVE' or 'REJECT'
+        self.branch_id = branch_id
+        self.action = action
         self.user = user
 
 
 class FinalizeReviewCommandHandler(CommandHandler):
     def execute(self, command: FinalizeReviewCommand) -> dict:
         audit_id = command.audit_id
+        branch_id = command.branch_id
         action = command.action
         user = command.user
 
         try:
             with transaction.atomic():
                 with connection.cursor() as cursor:
-                    # 1. Fetch current review master
-                    cursor.execute("SELECT status, current_cycle FROM dbo.audit_review_master WHERE audit_id = %s", [audit_id])
-                    row = cursor.fetchone()
-                    if not row:
-                        return {'success': False, 'message': 'Review master not found for this audit', 'status_code': 404}
-                    
-                    status, cycle = row
+                    # Resolve branch_id if missing
+                    if not branch_id:
+                        cursor.execute("SELECT audit_branch_id FROM dbo.audit_branch_progress WHERE audit_id = %s", [audit_id])
+                        b_row = cursor.fetchone()
+                        if b_row: branch_id = b_row[0]
 
-                    # Resolve reporting lines of reviewer to escalate or fallback
-                    cursor.execute("SELECT ReportToID, RoleId FROM dbo.map_userRole WHERE UserID = %s AND IsActive = 1", [user.UserID])
-                    reviewer_row = cursor.fetchone()
-                    report_to_id = reviewer_row[0] if reviewer_row else None
-                    role_id = reviewer_row[1] if reviewer_row else None
+                    # 1. Attempt stored procedure execution
+                    sp_success = False
+                    try:
+                        cursor.execute("""
+                            EXEC dbo.usp_AuditWorkflow_Monolithic
+                                @process_name = 'finalize_review',
+                                @audit_id     = %s,
+                                @branch_id    = %s,
+                                @reviewer_id  = %s
+                        """, [audit_id, branch_id or 0, user.UserID])
+                        sp_success = True
+                    except Exception as sp_err:
+                        log_error(f"usp_AuditWorkflow_Monolithic execution skipped: {str(sp_err)}")
 
-                    # Workflow levels logic
-                    if action == 'APPROVE':
-                        if status == 'submitted_l1':
-                            next_status = 'submitted_l2'
-                            next_assignee = report_to_id
-                        elif status == 'submitted_l2':
-                            next_status = 'submitted_l3'
-                            next_assignee = report_to_id
-                        elif status == 'submitted_l3':
-                            next_status = 'approved'
-                            next_assignee = None
-                            
-                            # Finalize audit status to completed
-                            cursor.execute("UPDATE dbo.audit_branch_progress SET audit_status = 'completed' WHERE audit_id = %s", [audit_id])
-                        else:
-                            return {'success': False, 'message': f'Cannot approve in current status: {status}'}
-                    else:  # REJECT
-                        if status == 'submitted_l1':
-                            next_status = 'rejected_l1'
-                        elif status == 'submitted_l2':
-                            next_status = 'rejected_l2'
-                        elif status == 'submitted_l3':
-                            next_status = 'rejected_l3'
-                        else:
-                            return {'success': False, 'message': f'Cannot reject in current status: {status}'}
-                        
-                        # Assign back to auditor
-                        cursor.execute("SELECT audit_assigned_to FROM dbo.audit_branch_progress WHERE audit_id = %s", [audit_id])
-                        auditor_row = cursor.fetchone()
-                        next_assignee = auditor_row[0] if auditor_row else None
-
-                        # Set progress status back to in-progress (re-audit/fix feedback points)
-                        cursor.execute("UPDATE dbo.audit_branch_progress SET audit_status = 'in-progress' WHERE audit_id = %s", [audit_id])
-
-                    # Update review master status
+                    # 2. Fetch current audit_status
                     cursor.execute("""
-                        UPDATE dbo.audit_review_master
-                        SET status = %s,
-                            assigned_to_user_id = %s,
-                            updated_at = GETDATE()
+                        SELECT audit_status FROM dbo.audit_branch_progress
                         WHERE audit_id = %s
-                    """, [next_status, next_assignee, audit_id])
+                    """, [audit_id])
+                    status_row = cursor.fetchone()
+                    final_status = status_row[0] if status_row else None
 
-            return {'success': True, 'message': f'Review finalized successfully with decision: {action}'}
+                    # 3. Fallback logic if SP not executed or status unresolved
+                    if not sp_success or not final_status or final_status in ('in-review', 'submitted', 'pending'):
+                        cursor.execute("SELECT COUNT(*) FROM dbo.audit_branch_checklist_feedback WHERE audit_id = %s AND review_status = 'reverted'", [audit_id])
+                        rev_b = cursor.fetchone()[0]
+                        cursor.execute("SELECT COUNT(*) FROM dbo.audit_center_checklist_feedback WHERE audit_id = %s AND review_status = 'reverted'", [audit_id])
+                        rev_c = cursor.fetchone()[0]
+                        cursor.execute("SELECT COUNT(*) FROM dbo.audit_client_checklist_feedback WHERE audit_id = %s AND review_status = 'reverted'", [audit_id])
+                        rev_cl = cursor.fetchone()[0]
+
+                        if (rev_b + rev_c + rev_cl) > 0 or (action and (action.upper() in ('REJECT', 'REVERT', 'REVERTED'))):
+                            final_status = 'reverted'
+                            cursor.execute("SELECT audit_assigned_to FROM dbo.audit_branch_progress WHERE audit_id = %s", [audit_id])
+                            auditor_row = cursor.fetchone()
+                            next_assignee = auditor_row[0] if auditor_row else None
+                            cursor.execute("UPDATE dbo.audit_branch_progress SET audit_status = 'reverted', audit_pending_with = %s WHERE audit_id = %s", [next_assignee, audit_id])
+                        else:
+                            final_status = 'completed'
+                            cursor.execute("UPDATE dbo.audit_branch_progress SET audit_status = 'completed', audit_pending_with = NULL WHERE audit_id = %s", [audit_id])
+
+                        cursor.execute("""
+                            UPDATE dbo.audit_branch_review_cycle
+                            SET outcome = %s,
+                                reviewer_id = %s,
+                                review_completed_at = GETDATE(),
+                                updated_at = GETDATE()
+                            WHERE audit_id = %s AND (outcome IS NULL OR outcome NOT IN ('completed', 'reverted'))
+                        """, [final_status, user.UserID, audit_id])
+
+            message_map = {
+                'completed': 'Review finalized. Audit is now completed — all points validated.',
+                'reverted': 'Review finalized. Audit reverted to auditor — some points need correction.',
+            }
+            message = message_map.get(final_status, f'Review finalized. Status: {final_status}')
+
+            return {
+                'success': True,
+                'final_status': final_status,
+                'message': message
+            }
         except Exception as e:
             log_error(f"FinalizeReviewCommandHandler failed: {str(e)}")
             raise e

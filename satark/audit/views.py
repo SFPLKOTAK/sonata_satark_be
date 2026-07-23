@@ -813,18 +813,18 @@ def record_point_decision(request):
     user, error_resp = validate_user_view(data.get('token', ''))
     if error_resp: return error_resp
 
-    required = ['audit_id', 'feedback_id', 'point_type', 'decision', 'remark']
-    missing = [r for r in required if r not in data]
-    if missing:
-        return JsonResponse({'success': False, 'message': f"Missing fields: {', '.join(missing)}"}, status=400)
+    feedback_id = data.get('feedback_id')
+    decision = data.get('decision')
+    if not feedback_id or not decision:
+        return JsonResponse({'success': False, 'message': 'feedback_id and decision are required'}, status=400)
 
     try:
         command = RecordPointDecisionCommand(
-            audit_id=data['audit_id'],
-            feedback_id=data['feedback_id'],
-            point_type=data['point_type'],
-            decision=data['decision'],
-            remark=data['remark'],
+            feedback_id=feedback_id,
+            decision=decision,
+            entity_type=data.get('entity_type') or data.get('point_type') or 'branch',
+            review_remark=data.get('review_remark') or data.get('remark') or '',
+            audit_id=data.get('audit_id'),
             user=user
         )
         result = dispatcher.send(command)
@@ -841,15 +841,18 @@ def finalize_review(request):
     if error_resp: return error_resp
 
     audit_id = data.get('audit_id')
-    action = data.get('action')
-    if not audit_id or not action:
-        return JsonResponse({'success': False, 'message': 'Missing audit_id or action'}, status=400)
+    if not audit_id:
+        return JsonResponse({'success': False, 'message': 'audit_id is required'}, status=400)
 
     try:
-        command = FinalizeReviewCommand(audit_id=audit_id, action=action, user=user)
+        command = FinalizeReviewCommand(
+            audit_id=audit_id,
+            branch_id=data.get('branch_id'),
+            action=data.get('action'),
+            user=user
+        )
         result = dispatcher.send(command)
-        status = result.pop('status_code', 200)
-        return JsonResponse(result, status=status)
+        return JsonResponse(result)
     except Exception as e:
         return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
 

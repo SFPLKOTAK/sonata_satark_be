@@ -327,23 +327,38 @@ class ViewFeedbackFileQuery(Query):
 
 class ViewFeedbackFileQueryHandler(QueryHandler):
     def execute(self, query: ViewFeedbackFileQuery) -> dict:
+        import base64, mimetypes
         file_id = query.file_id
-        tbl = "audit_branch_checklist_feedback_confidential_files" if query.is_confidential else "audit_branch_checklist_feedback_files"
-        col = "confidential_file_id" if query.is_confidential else "file_id"
+        # Correct actual DB table names:
+        # Normal files:       dbo.audit_branch_normal_files       (PK: id, content: file_content)
+        # Confidential files: dbo.audit_branch_confidential_files (PK: id, content: file_content)
+        tbl = "audit_branch_confidential_files" if query.is_confidential else "audit_branch_normal_files"
 
         try:
             with connection.cursor() as cursor:
-                cursor.execute(f"SELECT file_name, file_payload FROM dbo.{tbl} WHERE {col} = %s", [file_id])
+                cursor.execute(f"SELECT file_name, file_content FROM dbo.{tbl} WHERE id = %s", [file_id])
                 row = cursor.fetchone()
 
             if not row:
                 return {'success': False, 'message': 'File not found', 'status_code': 404}
 
             filename, payload = row
-            if payload:
-                payload = decompress_file_backend(payload, filename)
+            if not payload:
+                return {'success': False, 'message': 'File content is empty', 'status_code': 404}
 
-            return {'success': True, 'filename': filename, 'payload': payload, 'status_code': 200}
+            # Decompress if compressed
+            file_bytes = decompress_file_backend(bytes(payload), filename)
+
+            # Determine MIME type from filename
+            mime_type, _ = mimetypes.guess_type(filename or '')
+            if not mime_type:
+                mime_type = 'application/octet-stream'
+
+            # Encode to base64 dataUrl for frontend
+            b64 = base64.b64encode(file_bytes).decode('utf-8')
+            data_url = f"data:{mime_type};base64,{b64}"
+
+            return {'success': True, 'filename': filename, 'dataUrl': data_url, 'status_code': 200}
         except Exception as e:
             log_error(f"ViewFeedbackFileQueryHandler failed: {str(e)}")
             raise e
@@ -1283,26 +1298,40 @@ class GetReviewQueueQueryHandler(QueryHandler):
             with connection.cursor() as cursor:
                 cursor.execute("""
                     SELECT 
-                        r.review_id, r.audit_id, b.Branch AS branch_name, 
-                        u.UserName AS auditor_name, r.current_cycle, r.status, r.updated_at
-                    FROM dbo.audit_review_master r
+                        r.cycle_id AS review_id, 
+                        r.audit_id, 
+                        r.branch_id,
+                        COALESCE(b.Branch, CAST(r.branch_id AS varchar)) AS branch_name, 
+                        b.Division AS division,
+                        u.UserName AS auditor_name, 
+                        r.cycle_no,
+                        r.cycle_no AS current_cycle, 
+                        r.outcome AS status, 
+                        r.outcome AS audit_status,
+                        r.submitted_at,
+                        r.updated_at
+                    FROM dbo.audit_branch_review_cycle r
                     LEFT JOIN dbo.audit_branch_progress p ON r.audit_id = p.audit_id
-                    LEFT JOIN dbo.VW_Branch_To_GeographicalHierarchy b ON p.audit_branch_id = b.BranchID
-                    LEFT JOIN dbo.accounts_mst_usertbl u ON p.audit_assigned_to = u.UserID
-                    WHERE r.assigned_to_user_id = %s AND r.status IN ('submitted_l1', 'submitted_l2', 'submitted_l3')
+                    LEFT JOIN dbo.VW_Branch_To_GeographicalHierarchy b ON CAST(r.branch_id AS varchar) = b.BranchID
+                    LEFT JOIN dbo.accounts_mst_usertbl u ON r.submitted_by = u.UserID
+                    WHERE (r.reviewer_id = %s OR p.audit_pending_with = %s OR r.reviewer_id IS NULL OR r.submitted_by = %s)
+                      AND LOWER(r.outcome) IN ('submitted_l1', 'submitted_l2', 'submitted_l3', 'pending', 'in-review', 'in_review')
                     ORDER BY r.updated_at DESC
-                """, [user.UserID])
+                """, [user.UserID, user.UserID, user.UserID])
                 cols = [d[0] for d in cursor.description]
                 rows = cursor.fetchall()
             
             queue = []
             for r in rows:
                 rd = dict(zip(cols, r))
+                rd['Division'] = rd.get('division')
+                if rd.get('submitted_at') and hasattr(rd['submitted_at'], 'isoformat'):
+                    rd['submitted_at'] = rd['submitted_at'].isoformat()
                 if rd.get('updated_at') and hasattr(rd['updated_at'], 'isoformat'):
                     rd['updated_at'] = rd['updated_at'].isoformat()
                 queue.append(rd)
 
-            return {'success': True, 'queue': queue}
+            return {'success': True, 'queue': queue, 'audits': queue}
         except Exception as e:
             log_error(f"GetReviewQueueQueryHandler failed: {str(e)}")
             raise e
@@ -1318,77 +1347,169 @@ class GetReviewPointsQueryHandler(QueryHandler):
         audit_id = query.audit_id
         try:
             with connection.cursor() as cursor:
-                # 1. Branch level points with issue
+                # 1. Fetch audit metadata
+                audit_meta = {}
+                cursor.execute("""
+                    SELECT 
+                        p.audit_id, 
+                        p.audit_branch_id AS branch_id,
+                        COALESCE(b.Branch, CAST(p.audit_branch_id AS varchar)) AS branch_name,
+                        b.Division AS division,
+                        u.UserName AS auditor_name,
+                        p.audit_status,
+                        p.current_cycle_no,
+                        rc.submitted_at
+                    FROM dbo.audit_branch_progress p
+                    LEFT JOIN dbo.VW_Branch_To_GeographicalHierarchy b ON CAST(p.audit_branch_id AS varchar) = b.BranchID
+                    LEFT JOIN dbo.accounts_mst_usertbl u ON p.audit_assigned_to = u.UserID
+                    LEFT JOIN dbo.audit_branch_review_cycle rc ON p.audit_id = rc.audit_id AND p.current_cycle_no = rc.cycle_no
+                    WHERE p.audit_id = %s
+                """, [audit_id])
+                meta_row = cursor.fetchone()
+                if meta_row:
+                    sub_at = meta_row[7]
+                    if sub_at and hasattr(sub_at, 'isoformat'):
+                        sub_at = sub_at.isoformat()
+                    audit_meta = {
+                        'audit_id': meta_row[0],
+                        'branch_id': meta_row[1],
+                        'branch_name': meta_row[2] or f"Branch {meta_row[1]}",
+                        'division': meta_row[3] or '',
+                        'Division': meta_row[3] or '',
+                        'auditor_name': meta_row[4] or "Auditor",
+                        'audit_status': meta_row[5],
+                        'current_cycle_no': meta_row[6],
+                        'submitted_at': sub_at
+                    }
+
+                # 2. Branch level points
                 cursor.execute("""
                     SELECT
                         f.id AS feedback_id,
+                        f.checklist_id,
                         f.section_code,
-                        f.intent_title AS intent,
+                        COALESCE(NULLIF(m.section_name, ''), f.section_name) AS section_name,
+                        f.intent_code,
+                        COALESCE(NULLIF(m.intent_description, ''), NULLIF(m.intent_title, ''), NULLIF(f.intent_title, ''), f.intent_code) AS intent_title,
+                        COALESCE(NULLIF(m.intent_title, ''), NULLIF(f.intent_title, ''), f.intent_code) AS intent_title_short,
+                        m.intent_description,
                         f.answer,
                         f.normal_remark AS auditor_remark,
-                        s.max_score,
-                        s.score_obtained,
-                        l.decision AS last_decision,
-                        l.review_remark AS last_remark
+                        f.normal_file_path,
+                        nf.id AS normal_file_id,
+                        nf.file_name AS normal_file_name,
+                        cf.id AS confidential_file_id,
+                        cf.file_name AS confidential_file_name,
+                        f.total_sub_points,
+                        f.sub_points_yes_count,
+                        f.sub_points_no_count,
+                        COALESCE(s.max_score, m.max_score, 1) AS max_score,
+                        COALESCE(s.score_obtained, CASE WHEN f.answer = 'Yes' THEN COALESCE(s.max_score, m.max_score, 1) ELSE 0 END) AS score_obtained,
+                        COALESCE(l.decision, f.review_status, 'pending_review') AS review_status,
+                        COALESCE(l.decision, f.review_status, 'pending_review') AS last_decision,
+                        COALESCE(l.review_remark, f.review_remark, '') AS review_remark,
+                        COALESCE(l.review_remark, f.review_remark, '') AS last_remark
                     FROM dbo.audit_branch_checklist_feedback f
-                    JOIN dbo.audit_branch_checklist_score s ON f.checklist_id = s.checklist_id AND f.audit_id = s.audit_id
+                    LEFT JOIN dbo.audit_branch_checklist_master m ON f.checklist_id = m.checklist_id
+                    LEFT JOIN dbo.audit_branch_checklist_score s ON f.checklist_id = s.checklist_id AND f.audit_id = s.audit_id
+                    LEFT JOIN (
+                        SELECT feedback_id, MAX(id) AS id, MAX(file_name) AS file_name
+                        FROM dbo.audit_branch_normal_files
+                        WHERE is_archived = 0
+                        GROUP BY feedback_id
+                    ) nf ON f.id = nf.feedback_id
+                    LEFT JOIN (
+                        SELECT feedback_id, MAX(id) AS id, MAX(file_name) AS file_name
+                        FROM dbo.audit_branch_confidential_files
+                        WHERE is_archived = 0
+                        GROUP BY feedback_id
+                    ) cf ON f.id = cf.feedback_id
                     LEFT JOIN (
                         SELECT feedback_id, decision, review_remark,
                                ROW_NUMBER() OVER (PARTITION BY feedback_id ORDER BY log_id DESC) as rn
                         FROM dbo.audit_branch_checklist_review_log
                         WHERE audit_id = %s
                     ) l ON f.id = l.feedback_id AND l.rn = 1
-                    WHERE f.audit_id = %s AND s.score_obtained < s.max_score
+                    WHERE f.audit_id = %s
                 """, [audit_id, audit_id])
                 b_cols = [d[0] for d in cursor.description]
                 branch_points = [dict(zip(b_cols, row)) for row in cursor.fetchall()]
 
-                # 2. Center level points with issue
+                # 3. Center level points
                 cursor.execute("""
                     SELECT
                         f.id AS feedback_id,
                         f.center_id,
+                        f.center_checklist_id AS checklist_id,
                         f.parameter_code,
-                        f.parameter_name,
+                        COALESCE(NULLIF(m.parameter_name, ''), NULLIF(f.parameter_name, ''), f.parameter_code) AS parameter_name,
+                        COALESCE(NULLIF(m.parameter_name, ''), NULLIF(f.parameter_name, ''), f.parameter_code) AS intent_title,
                         f.answer,
                         f.normal_remark AS auditor_remark,
-                        f.max_score,
-                        l.decision AS last_decision,
-                        l.review_remark AS last_remark
+                        f.normal_file_path,
+                        cnf.id AS normal_file_id,
+                        cnf.file_name AS normal_file_name,
+                        ce.id AS evidence_file_id,
+                        ce.file_name AS evidence_file_name,
+                        1 AS max_score,
+                        CASE WHEN f.answer = 'Yes' THEN 1 ELSE 0 END AS score_obtained,
+                        COALESCE(l.decision, f.review_status, 'pending_review') AS review_status,
+                        COALESCE(l.decision, f.review_status, 'pending_review') AS last_decision,
+                        COALESCE(l.review_remark, f.review_remark, '') AS review_remark,
+                        COALESCE(l.review_remark, f.review_remark, '') AS last_remark
                     FROM dbo.audit_center_checklist_feedback f
+                    LEFT JOIN dbo.audit_center_checklist_master m ON f.center_checklist_id = m.center_checklist_id
+                    LEFT JOIN (
+                        SELECT feedback_id, MAX(id) AS id, MAX(file_name) AS file_name
+                        FROM dbo.audit_center_normal_files
+                        WHERE is_archived = 0
+                        GROUP BY feedback_id
+                    ) cnf ON f.id = cnf.feedback_id
+                    LEFT JOIN (
+                        SELECT feedback_id, MAX(id) AS id, MAX(file_name) AS file_name
+                        FROM dbo.audit_center_evidence
+                        WHERE is_archived = 0
+                        GROUP BY feedback_id
+                    ) ce ON f.id = ce.feedback_id
                     LEFT JOIN (
                         SELECT feedback_id, decision, review_remark,
                                ROW_NUMBER() OVER (PARTITION BY feedback_id ORDER BY log_id DESC) as rn
                         FROM dbo.audit_center_checklist_review_log
                         WHERE audit_id = %s
                     ) l ON f.id = l.feedback_id AND l.rn = 1
-                    WHERE f.audit_id = %s AND f.answer = 'No'
+                    WHERE f.audit_id = %s
                 """, [audit_id, audit_id])
                 c_cols = [d[0] for d in cursor.description]
                 center_points = [dict(zip(c_cols, row)) for row in cursor.fetchall()]
 
-                # 3. Client level points with issue
+                # 4. Client level points
                 cursor.execute("""
                     SELECT
                         f.id AS feedback_id,
                         f.center_id,
                         f.client_id,
                         f.client_name,
+                        f.client_checklist_id AS checklist_id,
                         f.parameter_code,
-                        f.parameter_name,
+                        COALESCE(NULLIF(m.parameter_name, ''), NULLIF(f.parameter_name, ''), f.parameter_code) AS parameter_name,
+                        COALESCE(NULLIF(m.parameter_name, ''), NULLIF(f.parameter_name, ''), f.parameter_code) AS intent_title,
                         f.answer,
                         f.remarks AS auditor_remark,
-                        f.max_score,
-                        l.decision AS last_decision,
-                        l.review_remark AS last_remark
+                        1 AS max_score,
+                        CASE WHEN f.answer = 'Yes' THEN 1 ELSE 0 END AS score_obtained,
+                        COALESCE(l.decision, f.review_status, 'pending_review') AS review_status,
+                        COALESCE(l.decision, f.review_status, 'pending_review') AS last_decision,
+                        COALESCE(l.review_remark, f.review_remark, '') AS review_remark,
+                        COALESCE(l.review_remark, f.review_remark, '') AS last_remark
                     FROM dbo.audit_client_checklist_feedback f
+                    LEFT JOIN dbo.audit_client_checklist_master m ON f.client_checklist_id = m.client_checklist_id
                     LEFT JOIN (
                         SELECT feedback_id, decision, review_remark,
                                ROW_NUMBER() OVER (PARTITION BY feedback_id ORDER BY log_id DESC) as rn
                         FROM dbo.audit_client_checklist_review_log
                         WHERE audit_id = %s
                     ) l ON f.id = l.feedback_id AND l.rn = 1
-                    WHERE f.audit_id = %s AND f.answer = 'No'
+                    WHERE f.audit_id = %s
                 """, [audit_id, audit_id])
                 cl_cols = [d[0] for d in cursor.description]
                 client_points = [dict(zip(cl_cols, row)) for row in cursor.fetchall()]
@@ -1401,6 +1522,7 @@ class GetReviewPointsQueryHandler(QueryHandler):
 
             return {
                 'success': True,
+                'audit_meta': audit_meta,
                 'branch_points': branch_points,
                 'center_points': center_points,
                 'client_points': client_points
@@ -1480,7 +1602,7 @@ class GetAuditReviewStatusQueryHandler(QueryHandler):
                 cursor.execute("""
                     SELECT
                         f.id AS feedback_id, f.client_checklist_id AS checklist_id,
-                        f.center_id, TRY_CAST(f.client_id AS INT) AS client_id,
+                        f.center_id, CAST(f.client_id AS NVARCHAR(50)) AS client_id,
                         f.client_name, f.parameter_code, f.parameter_name,
                         f.answer, CAST(f.review_status AS VARCHAR(20)) AS review_status, f.review_remark
                     FROM dbo.audit_client_checklist_feedback f
