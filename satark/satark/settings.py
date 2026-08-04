@@ -44,6 +44,7 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'satark.middleware.UserTrackingMiddleware',
 ]
 
 CORS_ALLOW_ALL_ORIGINS = True

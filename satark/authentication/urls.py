@@ -4,6 +4,9 @@ from .views import (
     admin_menu_view, admin_save_menu_view,
     admin_user_list_view, admin_save_user_view, admin_geo_hierarchy_view,
     create_role_view, map_user_role_view, create_user_view,
+    session_start_view, session_heartbeat_view, session_end_view, session_screen_log_view,
+    admin_analytics_dashboard_view, admin_analytics_screens_view, admin_analytics_apis_view,
+    admin_analytics_users_view, admin_analytics_live_view, admin_analytics_export_view
 )
 
 urlpatterns = [
@@ -18,5 +21,18 @@ urlpatterns = [
     path('admin/roles/create/', create_role_view, name='create_role'),
     path('admin/users/map-role/', map_user_role_view, name='map_user_role'),
     path('admin/users/create/', create_user_view, name='create_user'),
-]
 
+    # Session Tracking Endpoints
+    path('session/start/', session_start_view, name='session_start'),
+    path('session/heartbeat/', session_heartbeat_view, name='session_heartbeat'),
+    path('session/end/', session_end_view, name='session_end'),
+    path('session/screen-log/', session_screen_log_view, name='session_screen_log'),
+
+    # Admin Analytics & Telemetry Dashboard Endpoints
+    path('admin/analytics/dashboard/', admin_analytics_dashboard_view, name='admin_analytics_dashboard'),
+    path('admin/analytics/screens/', admin_analytics_screens_view, name='admin_analytics_screens'),
+    path('admin/analytics/apis/', admin_analytics_apis_view, name='admin_analytics_apis'),
+    path('admin/analytics/users/', admin_analytics_users_view, name='admin_analytics_users'),
+    path('admin/analytics/live/', admin_analytics_live_view, name='admin_analytics_live'),
+    path('admin/analytics/export/', admin_analytics_export_view, name='admin_analytics_export'),
+]

@@ -149,12 +149,16 @@ class LoginCommandHandler(CommandHandler):
             'empId': user.EmpID,
         }
 
-        log_info(f"User login successful: {usercode}")
+        from .user_tracking import record_session_start
+        session_id = record_session_start(user.id, usercode)
+
+        log_info(f"User login successful: {usercode}, session: {session_id}")
 
         return {
             'success': True,
             'access_token': access_token,
             'refresh_token': refresh_token,
+            'session_id': session_id,
             'user': user_details,
             'status_code': 200
         }
