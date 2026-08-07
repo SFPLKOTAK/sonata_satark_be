@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sonata Satark - ML Architecture & Codebase Documentation</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0b0f19;
+            --bg-secondary: #111827;
+            --bg-card: rgba(31, 41, 55, 0.6);
+            --border-card: rgba(255, 255, 255, 0.08);
+            --accent-blue: #3b82f6;
+            --accent-cyan: #06b6d4;
+            --accent-indigo: #6366f1;
+            --accent-green: #10b981;
+            --accent-amber: #f59e0b;
+            --accent-rose: #f43f5e;
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+            --font-main: 'Outfit', sans-serif;
+            --font-code: 'Fira Code', monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-primary);
+            color: var(--text-main);
+            font-family: var(--font-main);
+            line-height: 1.6;
+            padding: 2rem;
+            background-image: 
+                radial-gradient(at 10% 10%, rgba(99, 102, 241, 0.15) 0px, transparent 50%),
+                radial-gradient(at 90% 90%, rgba(6, 182, 212, 0.12) 0px, transparent 50%);
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1300px;
+            margin: 0 auto;
+        }
+
+        /* Header / Hero */
+        header {
+            background: linear-gradient(135deg, rgba(31, 41, 55, 0.8), rgba(17, 24, 39, 0.9));
+            border: 1px solid var(--border-card);
+            border-radius: 20px;
+            padding: 2.5rem;
+            margin-bottom: 2rem;
+            backdrop-filter: blur(12px);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+            position: relative;
+            overflow: hidden;
+        }
+
+        header::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 300px;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(99, 102, 241, 0.1));
+            pointer-events: none;
+        }
+
+        .badge {
+            display: inline-block;
+            background: rgba(99, 102, 241, 0.2);
+            color: var(--accent-cyan);
+            border: 1px solid rgba(6, 182, 212, 0.3);
+            padding: 0.35rem 0.85rem;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            margin-bottom: 1rem;
+            text-transform: uppercase;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, #ffffff 0%, #93c5fd 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 0.5rem;
+        }
+
+        header p {
+            color: var(--text-muted);
+            font-size: 1.1rem;
+            max-width: 800px;
+        }
+
+        /* KPI Grid */
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 1.25rem;
+            margin-bottom: 2.5rem;
+        }
+
+        .kpi-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-card);
+            border-radius: 16px;
+            padding: 1.5rem;
+            backdrop-filter: blur(10px);
+            transition: transform 0.3s ease, border-color 0.3s ease;
+        }
+
+        .kpi-card:hover {
+            transform: translateY(-4px);
+            border-color: rgba(99, 102, 241, 0.4);
+        }
+
+        .kpi-title {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 0.5rem;
+        }
+
+        .kpi-value {
+            font-size: 2rem;
+            font-weight: 800;
+            color: #ffffff;
+        }
+
+        .kpi-sub {
+            font-size: 0.85rem;
+            color: var(--accent-green);
+            margin-top: 0.3rem;
+        }
+
+        /* Section Titles */
+        .section-title {
+            font-size: 1.6rem;
+            font-weight: 700;
+            margin-bottom: 1.25rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .section-title::before {
+            content: '';
+            display: inline-block;
+            width: 5px;
+            height: 24px;
+            background: linear-gradient(180deg, var(--accent-cyan), var(--accent-indigo));
+            border-radius: 4px;
+        }
+
+        /* Architecture Flow Diagram */
+        .architecture-box {
+            background: var(--bg-card);
+            border: 1px solid var(--border-card);
+            border-radius: 20px;
+            padding: 2rem;
+            margin-bottom: 2.5rem;
+            backdrop-filter: blur(10px);
+        }
+
+        .flow-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            position: relative;
+            margin-top: 1.5rem;
+        }
+
+        .flow-step {
+            background: rgba(17, 24, 39, 0.8);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 14px;
+            padding: 1.25rem;
+            position: relative;
+            transition: all 0.3s ease;
+        }
+
+        .flow-step:hover {
+            border-color: var(--accent-cyan);
+            box-shadow: 0 10px 20px rgba(6, 182, 212, 0.15);
+        }
+
+        .step-num {
+            width: 28px;
+            height: 28px;
+            background: linear-gradient(135deg, var(--accent-indigo), var(--accent-cyan));
+            color: #ffffff;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.85rem;
+            font-weight: 700;
+            margin-bottom: 0.75rem;
+        }
+
+        .step-title {
+            font-weight: 700;
+            font-size: 1.05rem;
+            margin-bottom: 0.4rem;
+            color: #ffffff;
+        }
+
+        .step-desc {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        /* Grade Cutoff Table */
+        .grade-table-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-card);
+            border-radius: 16px;
+            padding: 1.5rem;
+            margin-bottom: 2.5rem;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+        }
+
+        th, td {
+            padding: 0.85rem 1.25rem;
+            text-align: left;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        th {
+            background: rgba(17, 24, 39, 0.6);
+            color: var(--accent-cyan);
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        tr:hover td {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .grade-pill {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 12px;
+            font-weight: 700;
+            font-size: 0.85rem;
+        }
+
+        .grade-a { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); }
+        .grade-b { background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); }
+        .grade-c { background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); }
+        .grade-d { background: rgba(244, 63, 94, 0.2); color: #f87171; border: 1px solid rgba(244, 63, 94, 0.4); }
+
+        /* Module Code Grid */
+        .modules-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2.5rem;
+        }
+
+        .module-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-card);
+            border-radius: 16px;
+            padding: 1.5rem;
+            backdrop-filter: blur(10px);
+        }
+
+        .module-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            padding-bottom: 0.75rem;
+        }
+
+        .file-name {
+            font-family: var(--font-code);
+            color: var(--accent-cyan);
+            font-weight: 600;
+            font-size: 1rem;
+        }
+
+        .code-block {
+            background: #090d16;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            padding: 1rem;
+            font-family: var(--font-code);
+            font-size: 0.82rem;
+            color: #d1d5db;
+            overflow-x: auto;
+            white-space: pre;
+            line-height: 1.5;
+        }
+
+        .code-keyword { color: #f472b6; }
+        .code-func { color: #38bdf8; }
+        .code-string { color: #a3e635; }
+        .code-comment { color: #6b7280; font-style: italic; }
+
+        /* Feature Importance Bar List */
+        .feature-item {
+            margin-bottom: 1rem;
+        }
+
+        .feature-info {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.9rem;
+            margin-bottom: 0.35rem;
+        }
+
+        .feature-bar-bg {
+            height: 8px;
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .feature-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent-indigo), var(--accent-cyan));
+            border-radius: 4px;
+        }
+
+        footer {
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            padding-top: 2rem;
+            border-top: 1px solid var(--border-card);
+            margin-top: 3rem;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <!-- Header Hero -->
+    <header>
+        <div class="badge">Sonata Satark AI Risk Analytics</div>
+        <h1>ML Model Architecture & Codebase Overview</h1>
+        <p>Predictive Early Warning System for Branch Audit Scores (0–100) & Audit Grades (A, B, C, D) using System Portfolio Risk Metrics and Regional Hierarchy.</p>
+    </header>
+
+    <!-- KPI Metrics -->
+    <div class="kpi-grid">
+        <div class="kpi-card">
+            <div class="kpi-title">High Risk Detection Accuracy</div>
+            <div class="kpi-value" style="color: #34d399;">70.9%</div>
+            <div class="kpi-sub">Flagging Grade C/D vs Normal A/B</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-title">Score Error (5-Fold CV MAE)</div>
+            <div class="kpi-value" style="color: #60a5fa;">5.40 pts</div>
+            <div class="kpi-sub">Out of 100-point Audit Scale</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-title">Dataset Size</div>
+            <div class="kpi-value">4,265</div>
+            <div class="kpi-sub">Historical Monthly Snapshots</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-title">Features Modeled</div>
+            <div class="kpi-value">39</div>
+            <div class="kpi-sub">Ratios, Sub-Scores & Geography</div>
+        </div>
+    </div>
+
+    <!-- System Architecture Flow -->
+    <div class="section-title">System Architecture & Data Flow</div>
+    <div class="architecture-box">
+        <p style="color: var(--text-muted); margin-bottom: 1rem;">End-to-end data pipeline from SQL Server stored procedure outputs to real-time predictive risk API responses.</p>
+        <div class="flow-container">
+            <div class="flow-step">
+                <div class="step-num">1</div>
+                <div class="step-title">SQL Data Source</div>
+                <div class="step-desc"><code>audit_branch_parameter_grade_training_data</code> (4,265 snapshot rows across 619 branches).</div>
+            </div>
+            <div class="flow-step">
+                <div class="step-num">2</div>
+                <div class="step-title">Data Loader</div>
+                <div class="step-desc"><code>data_loader.py</code> extracts data via Django DB connection with deduplicated audit date matching.</div>
+            </div>
+            <div class="flow-step">
+                <div class="step-num">3</div>
+                <div class="step-title">Feature Engineering</div>
+                <div class="step-desc"><code>feature_engineering.py</code> computes size-independent ratios, <code>Prev_Score</code> lag, & Category Dtypes.</div>
+            </div>
+            <div class="flow-step">
+                <div class="step-num">4</div>
+                <div class="step-title">Dual Model Trainer</div>
+                <div class="step-desc"><code>train.py</code> trains <code>XGBRegressor</code> (Score) & <code>XGBClassifier</code> (Grade) with time-based train/test split.</div>
+            </div>
+            <div class="flow-step">
+                <div class="step-num">5</div>
+                <div class="step-title">Predictive API</div>
+                <div class="step-desc"><code>predict.py</code> serves instant predictions with risk flags (High Staff Conc, Arrear growth).</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Official Grade Rules -->
+    <div class="section-title">Official Company Grade Thresholds</div>
+    <div class="grade-table-card">
+        <p style="color: var(--text-muted);">Configured in <code>ml_model/config.py</code> for automated score-to-grade mapping and threshold enforcement:</p>
+        <table>
+            <thead>
+                <tr>
+                    <th>Grade Letter</th>
+                    <th>Numerical Score Cutoff</th>
+                    <th>Operational Action Level</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><span class="grade-pill grade-a">Grade A</span></td>
+                    <td><strong>&ge; 70 Points</strong></td>
+                    <td>Normal Risk - Excellent Operational Control</td>
+                </tr>
+                <tr>
+                    <td><span class="grade-pill grade-b">Grade B</span></td>
+                    <td><strong>60 &ndash; 69 Points</strong></td>
+                    <td>Normal Risk - Satisfactory Compliance</td>
+                </tr>
+                <tr>
+                    <td><span class="grade-pill grade-c">Grade C</span></td>
+                    <td><strong>50 &ndash; 59 Points</strong></td>
+                    <td>High Risk - Priority Field Audit Required</td>
+                </tr>
+                <tr>
+                    <td><span class="grade-pill grade-d">Grade D</span></td>
+                    <td><strong>&lt; 50 Points</strong></td>
+                    <td>High Risk / Severe - Immediate Intervention</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Codebase Modules Breakdown -->
+    <div class="section-title">Codebase Structure & Module Implementation</div>
+    <div class="modules-grid">
+        
+        <!-- Module 1: config.py -->
+        <div class="module-card">
+            <div class="module-header">
+                <span class="file-name">ml_model/config.py</span>
+                <span style="font-size: 0.8rem; color: var(--accent-cyan);">Configuration</span>
+            </div>
+            <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.75rem;">Centralizes feature column names, model save paths, and official grade cutoffs.</p>
+            <div class="code-block"><span class="code-keyword">MODEL_FILE_PATH</span> = ARTIFACTS_DIR / <span class="code-string">"audit_risk_model.joblib"</span>
+<span class="code-keyword">CLASSIFIER_FILE_PATH</span> = ARTIFACTS_DIR / <span class="code-string">"audit_grade_classifier.joblib"</span>
+
+GRADE_THRESHOLDS = [
+    (70, <span class="code-string">'A'</span>), (60, <span class="code-string">'B'</span>), (50, <span class="code-string">'C'</span>), (0, <span class="code-string">'D'</span>)
+]
+
+FEATURE_COLS = [
+    <span class="code-string">'Zone'</span>, <span class="code-string">'Division'</span>, <span class="code-string">'Region'</span>,
+    <span class="code-string">'NPA_Rate_Pct'</span>, <span class="code-string">'Arrear_Rate_Pct'</span>, <span class="code-string">'WriteOff_Rate_Pct'</span>,
+    <span class="code-string">'Prev_Score'</span>, <span class="code-string">'Score_MissedInst'</span>, <span class="code-string">'TotalPrincipalOS'</span>
+]</div>
+        </div>
+
+        <!-- Module 2: feature_engineering.py -->
+        <div class="module-card">
+            <div class="module-header">
+                <span class="file-name">ml_model/feature_engineering.py</span>
+                <span style="font-size: 0.8rem; color: var(--accent-cyan);">Transformation</span>
+            </div>
+            <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.75rem;">Converts raw counts into size-independent ratios and handles lag features.</p>
+            <div class="code-block"><span class="code-keyword">def</span> <span class="code-func">transform_features</span>(df):
+    <span class="code-comment"># Size-independent ratios</span>
+    df[<span class="code-string">'NPA_Rate_Pct'</span>] = df[<span class="code-string">'Cur_NPA_Amt'</span>] * 100.0 / principal_os
+    df[<span class="code-string">'Arrear_Rate_Pct'</span>] = df[<span class="code-string">'Cur_ArrearAmt'</span>] * 100.0 / principal_os
+    
+    <span class="code-comment"># Previous audit score lag</span>
+    df[<span class="code-string">'Prev_Score'</span>] = df.groupby(<span class="code-string">'Branch_ID'</span>)[<span class="code-string">'Score'</span>].shift(1)
+    
+    <span class="code-comment"># Categorical hierarchy</span>
+    <span class="code-keyword">for</span> cat <span class="code-keyword">in</span> [<span class="code-string">'Zone'</span>, <span class="code-string">'Division'</span>, <span class="code-string">'Region'</span>]:
+        df[cat] = df[cat].astype(<span class="code-string">'category'</span>)
+    <span class="code-keyword">return</span> df</div>
+        </div>
+
+        <!-- Module 3: train.py -->
+        <div class="module-card">
+            <div class="module-header">
+                <span class="file-name">ml_model/train.py</span>
+                <span style="font-size: 0.8rem; color: var(--accent-cyan);">Training Engine</span>
+            </div>
+            <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.75rem;">Trains XGBRegressor and XGBClassifier with time-based train/test splits.</p>
+            <div class="code-block"><span class="code-keyword">def</span> <span class="code-func">train_model</span>():
+    regressor = XGBRegressor(n_estimators=300, max_depth=6, enable_categorical=True)
+    classifier = XGBClassifier(n_estimators=300, max_depth=6, enable_categorical=True)
+    
+    regressor.fit(X_train, y_score_train)
+    classifier.fit(X_train, y_grade_train)
+    
+    joblib.dump(regressor, MODEL_FILE_PATH)
+    joblib.dump(classifier, CLASSIFIER_FILE_PATH)</div>
+        </div>
+
+        <!-- Module 4: predict.py -->
+        <div class="module-card">
+            <div class="module-header">
+                <span class="file-name">ml_model/predict.py</span>
+                <span style="font-size: 0.8rem; color: var(--accent-cyan);">Inference API</span>
+            </div>
+            <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.75rem;">Instant prediction engine with risk warning triggers for Django views.</p>
+            <div class="code-block"><span class="code-keyword">def</span> <span class="code-func">predict_branch_audit_score</span>(branch_data):
+    regressor, classifier, label_encoder = get_models()
+    X = transform_features(branch_data)[FEATURE_COLS]
+    
+    score_pred = regressor.predict(X)[0]
+    grade_pred = label_encoder.inverse_transform(classifier.predict(X))[0]
+    
+    <span class="code-keyword">return</span> {
+        <span class="code-string">'predicted_score'</span>: score_pred,
+        <span class="code-string">'predicted_grade'</span>: grade_pred,
+        <span class="code-string">'risk_level'</span>: <span class="code-string">'HIGH'</span> <span class="code-keyword">if</span> grade_pred <span class="code-keyword">in</span> [<span class="code-string">'C'</span>, <span class="code-string">'D'</span>] <span class="code-keyword">else</span> <span class="code-string">'NORMAL'</span>
+    }</div>
+        </div>
+
+    </div>
+
+    <!-- Feature Importances -->
+    <div class="section-title">Top Predictive Drivers (Model SHAP Weights)</div>
+    <div class="architecture-box">
+        <div class="feature-item">
+            <div class="feature-info">
+                <span>1. Previous Historical Audit Score (<code>Prev_Score</code>)</span>
+                <span style="font-weight: 700; color: var(--accent-cyan);">18.4%</span>
+            </div>
+            <div class="feature-bar-bg"><div class="feature-bar-fill" style="width: 100%;"></div></div>
+        </div>
+
+        <div class="feature-item">
+            <div class="feature-info">
+                <span>2. Regional Geographical Area (<code>Region</code>)</span>
+                <span style="font-weight: 700; color: var(--accent-cyan);">5.5%</span>
+            </div>
+            <div class="feature-bar-bg"><div class="feature-bar-fill" style="width: 30%;"></div></div>
+        </div>
+
+        <div class="feature-item">
+            <div class="feature-info">
+                <span>3. New Defaults Entry Rate (<code>NewDefault_Rate_Pct</code>)</span>
+                <span style="font-weight: 700; color: var(--accent-cyan);">2.8%</span>
+            </div>
+            <div class="feature-bar-bg"><div class="feature-bar-fill" style="width: 15%;"></div></div>
+        </div>
+
+        <div class="feature-item">
+            <div class="feature-info">
+                <span>4. Collection Efficiency Sub-Score (<code>SubScore_CollectionEfficiency</code>)</span>
+                <span style="font-weight: 700; color: var(--accent-cyan);">2.6%</span>
+            </div>
+            <div class="feature-bar-bg"><div class="feature-bar-fill" style="width: 14%;"></div></div>
+        </div>
+
+        <div class="feature-item">
+            <div class="feature-info">
+                <span>5. Overall Collection Rate % (<code>CollectionRate_Pct</code>)</span>
+                <span style="font-weight: 700; color: var(--accent-cyan);">2.6%</span>
+            </div>
+            <div class="feature-bar-bg"><div class="feature-bar-fill" style="width: 14%;"></div></div>
+        </div>
+    </div>
+
+    <footer>
+        <p>Sonata Satark AI Risk Engine &bull; Developed for Branch Audit Risk Automation & Early Warning Intelligence</p>
+    </footer>
+</div>
+
+</body>
+</html>
