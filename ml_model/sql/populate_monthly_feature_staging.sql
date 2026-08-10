@@ -1,8 +1,7 @@
 begin 
-    DROP TABLE IF EXISTS #final_table_for_ml_parameters;
-    declare @asondate date = '2025-10-01'
+      declare @asondate date = '2026-08-01'
 
-      while @asondate < '2026-07-02'
+      while @asondate < '2026-08-02'
       begin 
             print @asondate
 
@@ -394,7 +393,10 @@ begin
                   Avg_Center_Size                 DECIMAL(10,2),
 
                         AsOnDate                        DATE,
-                        ComparedToDate                  DATE
+                        ComparedToDate                  DATE,
+						zone varchar(50),
+						division varchar(50),
+						region varchar(50)
                   );
             END;
 
@@ -461,7 +463,10 @@ begin
                   ActiveCenterCount,
                   Avg_Center_Size,
                   AsOnDate,
-                  ComparedToDate
+                  ComparedToDate,
+				zone,
+				division,
+				region
             )
             SELECT
                   pq.BRANCHID,
@@ -758,12 +763,16 @@ begin
                   cr.ActiveCenterCount,
                   cr.Avg_Center_Size,
                   @AsOnDate                                                              AS AsOnDate,
-                  @PriorDate                                                             AS ComparedToDate
+                  @PriorDate                                                             AS ComparedToDate,
+				  vgh.zone,
+				  vgh.Division,
+				  vgh.region
             
             FROM #PortfolioQuality  pq
             LEFT JOIN #TrendMetrics      tm ON pq.BRANCH = tm.BRANCH AND pq.BRANCHID = tm.BRANCHID
             LEFT JOIN #CollectionMetrics cm ON pq.BRANCH = cm.BRANCH AND pq.BRANCHID = cm.BRANCHID
             LEFT JOIN #ConcentrationRisk cr ON pq.BRANCH = cr.BRANCH AND pq.BRANCHID = cr.BRANCHID
+			left join VW_Branch_To_GeographiclHierarchy_26june26 vgh on pq.BRANCHID = vgh.BranchID
             ORDER BY RiskScore DESC;
 
             SET @Msg = '  [Step 6/6] DONE | Elapsed: '

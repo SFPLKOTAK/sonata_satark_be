@@ -41,13 +41,37 @@ def predict_branch_audit_score(branch_data: Union[Dict[str, Any], pd.DataFrame])
         df_input = branch_data.copy()
 
     df_transformed = transform_features(df_input, is_training=False)
-    X = df_transformed[FEATURE_COLS]
+    X = df_transformed[FEATURE_COLS].copy()
+
+    # Convert categorical dtypes to integer codes for compatibility with Stacking Ensemble (CatBoost/HistGB/XGBoost)
+    cat_cols = ['Zone', 'Division', 'Region']
+    for cat in cat_cols:
+        if cat in X.columns:
+            if hasattr(X[cat], 'cat'):
+                X[cat] = X[cat].cat.codes
+            else:
+                X[cat] = pd.Categorical(X[cat]).codes
 
     # Regressor score prediction
     raw_scores = regressor.predict(X)
     clipped_scores = np.clip(raw_scores, 0, 100)
 
-    # Classifier grade prediction
+    # Check for optimized grade thresholds
+    from .config import ARTIFACTS_DIR
+    import json
+    best_params_path = ARTIFACTS_DIR / "best_hyperparameters.json"
+    opt_thresholds = None
+    if os.path.exists(best_params_path):
+        try:
+            with open(best_params_path, 'r') as f:
+                hp_data = json.load(f)
+            t_dict = hp_data.get('optimized_thresholds', {})
+            if t_dict:
+                opt_thresholds = (t_dict['t_A'], t_dict['t_B'], t_dict['t_C'])
+        except Exception:
+            opt_thresholds = None
+
+    predicted_grades = [score_to_grade(s, thresholds=opt_thresholds) for s in clipped_scores]
     classifier_grade_indices = classifier.predict(X)
     classifier_grades = label_encoder.inverse_transform(classifier_grade_indices)
 

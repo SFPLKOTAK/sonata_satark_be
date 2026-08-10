@@ -87,25 +87,27 @@ def train_model(data_source_df: pd.DataFrame = None, csv_filepath: str = None) -
 
     # 4. Model Algorithm Training (Regressor + Classifier)
     print(f"\n [STEP 4/5] Training Dual Models (Score Regressor & Grade Classifier)...")
+
+    # Load tuned hyperparams if available
+    best_params_path = ARTIFACTS_DIR / "best_hyperparameters.json"
+    reg_kwargs = {'random_state': 42}
+    clf_kwargs = {'random_state': 42}
+
+    if os.path.exists(best_params_path):
+        try:
+            with open(best_params_path, 'r') as f:
+                hp_data = json.load(f)
+            reg_kwargs.update(hp_data.get('regressor_params', {}))
+            clf_kwargs.update(hp_data.get('classifier_params', {}))
+            print("   [HYPERPARAMS] Successfully loaded tuned hyperparameters from best_hyperparameters.json")
+        except Exception as e:
+            print(f"   ⚠️ Could not load tuned hyperparams ({e}). Using default parameters.")
+
     if HAS_XGBOOST:
-        regressor = XGBRegressor(
-            n_estimators=300,
-            max_depth=6,
-            learning_rate=0.05,
-            subsample=0.85,
-            colsample_bytree=0.85,
-            enable_categorical=True,
-            random_state=42
-        )
-        classifier = XGBClassifier(
-            n_estimators=300,
-            max_depth=6,
-            learning_rate=0.05,
-            subsample=0.85,
-            colsample_bytree=0.85,
-            enable_categorical=True,
-            random_state=42
-        )
+        reg_kwargs.update({'enable_categorical': True, 'tree_method': 'hist'})
+        clf_kwargs.update({'enable_categorical': True, 'tree_method': 'hist'})
+        regressor = XGBRegressor(**reg_kwargs)
+        classifier = XGBClassifier(**clf_kwargs)
     else:
         regressor = GradientBoostingRegressor(n_estimators=200, max_depth=5, learning_rate=0.05, random_state=42)
         classifier = GradientBoostingClassifier(n_estimators=200, max_depth=5, learning_rate=0.05, random_state=42)

@@ -1,0 +1,9 @@
+{
+  "training_timestamp": "2026-08-09T01:49:06.674997",
+  "model_type": "Stacking Ensemble (XGBoost + CatBoost/LightGBM + HistGB)",
+  "cv_5fold_mae": 4.26,
+  "out_of_time_test_mae": 5.14,
+  "exact_grade_accuracy": 57.2,
+  "direct_classifier_accuracy": 55.3,
+  "high_risk_detection_accuracy": 72.8
+}

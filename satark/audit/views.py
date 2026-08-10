@@ -1117,14 +1117,256 @@ def view_ticket_response_file(request, response_id):
         file_name = result.get('file_name', 'response_file')
         file_bytes = result.get('file_bytes')
         
-        from django.http import HttpResponse
-        import mimetypes
-        content_type, _ = mimetypes.guess_type(file_name)
-        if not content_type:
-            content_type = 'application/octet-stream'
-            
         response = HttpResponse(file_bytes, content_type=content_type)
         response['Content-Disposition'] = f'inline; filename="{file_name}"'
         return response
     except Exception as e:
         return JsonResponse({'success': False, 'message': str(e)}, status=500)
+
+
+@csrf_exempt
+def get_branch_ml_risk_predictions(request):
+    """
+    API Endpoint: Fetches ML Risk Predictions & Key Risk Points for a given branch_id or branch_name
+    Source Table: dbo.ML_TBL_Monthly_Branch_Risk_Predictions
+    """
+    import re
+    branch_id = None
+    branch_name = None
+
+    if request.method == 'GET':
+        branch_id = request.GET.get('branch_id')
+        branch_name = request.GET.get('branch_name')
+    else:
+        try:
+            body = json.loads(request.body.decode('utf-8'))
+            branch_id = body.get('branch_id')
+            branch_name = body.get('branch_name')
+        except Exception:
+            branch_id = request.POST.get('branch_id')
+            branch_name = request.POST.get('branch_name')
+
+    # Extract numeric branch ID or string branch name
+    clean_id = None
+    clean_name = str(branch_name).strip() if branch_name else None
+
+    if branch_id is not None:
+        str_id = str(branch_id).strip()
+        match_digits = re.findall(r'\d+', str_id)
+        if match_digits:
+            clean_id = int(match_digits[-1])
+        if not clean_name and '(' in str_id:
+            clean_name = str_id.split('(')[0].strip()
+
+    if clean_name and clean_name.lower() in ['none', 'null', 'undefined']:
+        clean_name = None
+
+    if clean_id is None and not clean_name:
+        return JsonResponse({'success': False, 'message': 'branch_id or branch_name parameter is required'}, status=400)
+
+    try:
+        from django.db import connection
+        cursor = connection.cursor()
+
+        # Primary Query: Active Monthly Predictions Table
+        query_active = """
+        SELECT TOP 1
+            Branch_ID, BranchName, Zone, Division, Region, AsOnDate,
+            Predicted_Score, Predicted_Grade_From_Score, Predicted_Grade_Direct_Classifier,
+            Final_Recommended_Grade, Risk_Level, Risk_Warnings, Key_points_impacting_risk,
+            Model_Version, ScoredAt
+        FROM dbo.ML_TBL_Monthly_Branch_Risk_Predictions
+        WHERE (%s IS NOT NULL AND Branch_ID = %s)
+           OR (%s IS NOT NULL AND UPPER(BranchName) = UPPER(%s))
+           OR (%s IS NOT NULL AND UPPER(BranchName) LIKE UPPER(%s))
+        ORDER BY ScoredAt DESC
+        """
+        like_name = f"%{clean_name}%" if clean_name else None
+        cursor.execute(query_active, [clean_id, clean_id, clean_name, clean_name, clean_name, like_name])
+        row = cursor.fetchone()
+
+        # Fallback Query: Historical Archive Table
+        if not row:
+            query_history = """
+            SELECT TOP 1
+                Branch_ID, BranchName, Zone, Division, Region, AsOnDate,
+                Predicted_Score, Predicted_Grade_From_Score, Predicted_Grade_Direct_Classifier,
+                Final_Recommended_Grade, Risk_Level, Risk_Warnings, Key_points_impacting_risk,
+                Model_Version, ScoredAt
+            FROM dbo.ML_TBL_Branch_Risk_Prediction_History
+            WHERE (%s IS NOT NULL AND Branch_ID = %s)
+               OR (%s IS NOT NULL AND UPPER(BranchName) = UPPER(%s))
+               OR (%s IS NOT NULL AND UPPER(BranchName) LIKE UPPER(%s))
+            ORDER BY AsOnDate DESC, ScoredAt DESC
+            """
+            cursor.execute(query_history, [clean_id, clean_id, clean_name, clean_name, clean_name, like_name])
+            row = cursor.fetchone()
+
+        if not row:
+            return JsonResponse({
+                'success': False, 
+                'message': f'No ML risk prediction data found for branch_id={clean_id}, branch_name="{clean_name}"'
+            }, status=404)
+
+        # Parse fields
+        b_id, b_name, zone, division, region, as_on_date, \
+        pred_score, grade_from_score, grade_direct_clf, \
+        final_grade, risk_level, warnings_raw, key_points_raw, \
+        model_version, scored_at = row
+
+        # Parse warnings
+        warnings = []
+        if warnings_raw:
+            try:
+                warnings = json.loads(warnings_raw)
+            except Exception:
+                warnings = [w.strip() for w in str(warnings_raw).split(',') if w.strip()]
+
+        # Parse key risk points list
+        key_points_list = []
+        if key_points_raw:
+            key_points_list = [kp.strip() for kp in str(key_points_raw).split(',') if kp.strip()]
+
+        payload = {
+            'branch_id': b_id,
+            'branch_name': b_name,
+            'zone': zone,
+            'division': division,
+            'region': region,
+            'as_on_date': str(as_on_date) if as_on_date else None,
+            'predicted_score': float(pred_score) if pred_score is not None else None,
+            'predicted_grade_from_score': grade_from_score,
+            'predicted_grade_direct_classifier': grade_direct_clf,
+            'final_recommended_grade': final_grade,
+            'risk_level': risk_level,
+            'risk_warnings': warnings,
+            'key_points_impacting_risk': key_points_raw,
+            'key_risk_points_list': key_points_list,
+            'model_version': model_version,
+            'scored_at': scored_at.strftime('%Y-%m-%d %H:%M:%S') if scored_at else None
+        }
+
+        return JsonResponse({
+            'success': True,
+            'data': payload
+        })
+
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def get_branch_past_audits_trend(request):
+    """
+    API Endpoint: Fetches Past 6 Audits History Trend from audit_branch_grade_history_final
+    Table: dbo.audit_branch_grade_history_final
+    Columns: Zone, Division, Region, Branch_Name, Branch_ID, Month, Grade, Score, isactual
+    """
+    import re
+    from datetime import datetime
+
+    branch_id = None
+    branch_name = None
+
+    if request.method == 'GET':
+        branch_id = request.GET.get('branch_id')
+        branch_name = request.GET.get('branch_name')
+    else:
+        try:
+            body = json.loads(request.body.decode('utf-8'))
+            branch_id = body.get('branch_id')
+            branch_name = body.get('branch_name')
+        except Exception:
+            branch_id = request.POST.get('branch_id')
+            branch_name = request.POST.get('branch_name')
+
+    clean_id = None
+    clean_name = str(branch_name).strip() if branch_name else None
+
+    if branch_id is not None:
+        str_id = str(branch_id).strip()
+        match_digits = re.findall(r'\d+', str_id)
+        if match_digits:
+            clean_id = int(match_digits[-1])
+        if not clean_name and '(' in str_id:
+            clean_name = str_id.split('(')[0].strip()
+
+    if clean_name and clean_name.lower() in ['none', 'null', 'undefined']:
+        clean_name = None
+
+    if clean_id is None and not clean_name:
+        return JsonResponse({'success': False, 'message': 'branch_id or branch_name parameter is required'}, status=400)
+
+    try:
+        from django.db import connection
+        cursor = connection.cursor()
+
+        query_history = """
+        SELECT TOP 6
+            Branch_ID, Branch_Name, Month, Grade, Score, isactual, Zone, Division, Region
+        FROM dbo.audit_branch_grade_history_final
+        WHERE (%s IS NOT NULL AND Branch_ID = %s)
+           OR (%s IS NOT NULL AND UPPER(Branch_Name) = UPPER(%s))
+           OR (%s IS NOT NULL AND UPPER(Branch_Name) LIKE UPPER(%s))
+        ORDER BY Month DESC
+        """
+        like_name = f"%{clean_name}%" if clean_name else None
+        cursor.execute(query_history, [clean_id, clean_id, clean_name, clean_name, clean_name, like_name])
+        rows = cursor.fetchall()
+
+        if not rows:
+            return JsonResponse({
+                'success': False,
+                'message': f'No historical audit records found in audit_branch_grade_history_final for branch_id={clean_id}, branch_name="{clean_name}"',
+                'trend': [],
+                'scores': []
+            }, status=404)
+
+        # Reverse to get chronological order (oldest to newest for left-to-right line chart)
+        rows_chronological = list(reversed(rows))
+
+        trend_list = []
+        scores_list = []
+
+        for row in rows_chronological:
+            b_id, b_name, m_date, grade, score, is_act, z, d, r = row
+            m_str = str(m_date) if m_date else ''
+            
+            # Format Month Label (e.g. '2025-12-01' -> 'Dec 25')
+            month_label = m_str
+            if m_date:
+                try:
+                    if isinstance(m_date, str):
+                        dt = datetime.strptime(m_date[:10], '%Y-%m-%d')
+                    else:
+                        dt = m_date
+                    month_label = dt.strftime('%b %y')
+                except Exception:
+                    month_label = m_str
+
+            score_val = float(score) if score is not None else 0.0
+            scores_list.append(score_val)
+
+            trend_list.append({
+                'branch_id': b_id,
+                'branch_name': b_name,
+                'month': m_str,
+                'month_label': month_label,
+                'grade': grade or 'N/A',
+                'score': score_val,
+                'is_actual': bool(is_act) if is_act is not None else True,
+                'zone': z,
+                'division': d,
+                'region': r
+            })
+
+        return JsonResponse({
+            'success': True,
+            'branch_id': rows_chronological[0][0],
+            'branch_name': rows_chronological[0][1],
+            'trend': trend_list,
+            'scores': scores_list
+        })
+
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)

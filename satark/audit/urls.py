@@ -29,7 +29,7 @@ from .views import (
     # Auditee
     get_auditee_dashboard, get_auditee_audits, get_auditee_caps,
     get_compliance_tickets, send_ticket_alert, resolve_ticket, initiate_ticket_call,
-    submit_ticket_response, view_ticket_response_file
+    submit_ticket_response, view_ticket_response_file, get_branch_ml_risk_predictions, get_branch_past_audits_trend
 )
 
 urlpatterns = [
@@ -73,6 +73,8 @@ urlpatterns = [
 
     # Branch Overview route
     path('branch/overview/', get_branch_overview, name='get_branch_overview'),
+    path('branch/ml-risk-predictions/', get_branch_ml_risk_predictions, name='get_branch_ml_risk_predictions'),
+    path('branch/past-audits-trend/', get_branch_past_audits_trend, name='get_branch_past_audits_trend'),
 
     # Combined Reports routes
     path('completed-audits/', get_completed_audits, name='get_completed_audits'),

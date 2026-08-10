@@ -366,24 +366,64 @@
     <div class="kpi-grid">
         <div class="kpi-card">
             <div class="kpi-title">High Risk Detection Accuracy</div>
-            <div class="kpi-value" style="color: #34d399;">70.9%</div>
+            <div class="kpi-value" style="color: #34d399;">72.8%</div>
             <div class="kpi-sub">Flagging Grade C/D vs Normal A/B</div>
         </div>
         <div class="kpi-card">
             <div class="kpi-title">Score Error (5-Fold CV MAE)</div>
-            <div class="kpi-value" style="color: #60a5fa;">5.40 pts</div>
-            <div class="kpi-sub">Out of 100-point Audit Scale</div>
+            <div class="kpi-value" style="color: #60a5fa;">4.26 pts</div>
+            <div class="kpi-sub">Out-of-Time Test MAE: 5.14 pts</div>
         </div>
         <div class="kpi-card">
             <div class="kpi-title">Dataset Size</div>
-            <div class="kpi-value">4,265</div>
-            <div class="kpi-sub">Historical Monthly Snapshots</div>
+            <div class="kpi-value">6,481</div>
+            <div class="kpi-sub">10 Monthly Snapshots (619 Branches)</div>
         </div>
         <div class="kpi-card">
             <div class="kpi-title">Features Modeled</div>
-            <div class="kpi-value">39</div>
-            <div class="kpi-sub">Ratios, Sub-Scores & Geography</div>
+            <div class="kpi-value">51</div>
+            <div class="kpi-sub">PAR Buckets, Staff Load, Center Size</div>
         </div>
+    </div>
+
+    <!-- Model Benchmark Comparison Table -->
+    <div class="section-title">Model Performance Benchmark Evolution</div>
+    <div class="grade-table-card">
+        <p style="color: var(--text-muted); margin-bottom: 0.75rem;">Progression of model accuracy across baseline, hyperparameter tuning, and multi-model stacking ensemble:</p>
+        <table>
+            <thead>
+                <tr>
+                    <th>Model Architecture</th>
+                    <th>5-Fold CV MAE</th>
+                    <th>Out-of-Time Test MAE</th>
+                    <th>Exact 4-Grade Match</th>
+                    <th>High-Risk Detection (C/D)</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>Baseline Single Model</strong></td>
+                    <td>5.38 pts</td>
+                    <td>6.28 pts</td>
+                    <td>48.2%</td>
+                    <td>65.2%</td>
+                </tr>
+                <tr>
+                    <td><strong>Tuned Single XGBoost (<code>tune.py</code>)</strong></td>
+                    <td>4.35 pts</td>
+                    <td>5.23 pts</td>
+                    <td>55.8%</td>
+                    <td>72.1%</td>
+                </tr>
+                <tr style="background: rgba(16, 185, 129, 0.08);">
+                    <td><strong style="color: var(--accent-green);">Stacking Ensemble + CatBoost & LightGBM</strong></td>
+                    <td><strong style="color: var(--accent-green);">4.26 pts</strong></td>
+                    <td><strong style="color: var(--accent-green);">5.14 pts (BEST)</strong></td>
+                    <td><strong style="color: var(--accent-green);">57.2%</strong></td>
+                    <td><strong style="color: var(--accent-green);">72.8% (BEST)</strong></td>
+                </tr>
+            </tbody>
+        </table>
     </div>
 
     <!-- System Architecture Flow -->
@@ -394,7 +434,7 @@
             <div class="flow-step">
                 <div class="step-num">1</div>
                 <div class="step-title">SQL Data Source</div>
-                <div class="step-desc"><code>audit_branch_parameter_grade_training_data</code> (4,265 snapshot rows across 619 branches).</div>
+                <div class="step-desc"><code>audit_branch_parameter_grade_training_data</code> (6,481 snapshot rows across 619 branches).</div>
             </div>
             <div class="flow-step">
                 <div class="step-num">2</div>
@@ -409,7 +449,7 @@
             <div class="flow-step">
                 <div class="step-num">4</div>
                 <div class="step-title">Dual Model Trainer</div>
-                <div class="step-desc"><code>train.py</code> trains <code>XGBRegressor</code> (Score) & <code>XGBClassifier</code> (Grade) with time-based train/test split.</div>
+                <div class="step-desc"><code>ensemble.py</code> trains Stacking Ensemble combining XGBoost + CatBoost + LightGBM.</div>
             </div>
             <div class="flow-step">
                 <div class="step-num">5</div>
@@ -476,8 +516,8 @@ GRADE_THRESHOLDS = [
 
 FEATURE_COLS = [
     <span class="code-string">'Zone'</span>, <span class="code-string">'Division'</span>, <span class="code-string">'Region'</span>,
-    <span class="code-string">'NPA_Rate_Pct'</span>, <span class="code-string">'Arrear_Rate_Pct'</span>, <span class="code-string">'WriteOff_Rate_Pct'</span>,
-    <span class="code-string">'Prev_Score'</span>, <span class="code-string">'Score_MissedInst'</span>, <span class="code-string">'TotalPrincipalOS'</span>
+    <span class="code-string">'PAR_1_30_Rate_Pct'</span>, <span class="code-string">'Staff_Caseload_Ratio'</span>,
+    <span class="code-string">'Staff_Overstay_12M_Pct'</span>, <span class="code-string">'Avg_Center_Size'</span>
 ]</div>
         </div>
 
@@ -491,10 +531,10 @@ FEATURE_COLS = [
             <div class="code-block"><span class="code-keyword">def</span> <span class="code-func">transform_features</span>(df):
     <span class="code-comment"># Size-independent ratios</span>
     df[<span class="code-string">'NPA_Rate_Pct'</span>] = df[<span class="code-string">'Cur_NPA_Amt'</span>] * 100.0 / principal_os
-    df[<span class="code-string">'Arrear_Rate_Pct'</span>] = df[<span class="code-string">'Cur_ArrearAmt'</span>] * 100.0 / principal_os
+    df[<span class="code-string">'Staff_Caseload_Ratio'</span>] = df[<span class="code-string">'TotalLoans'</span>] / df[<span class="code-string">'ActiveStaffCount'</span>]
     
     <span class="code-comment"># Previous audit score lag</span>
-    df[<span class="code-string">'Prev_Score'</span>] = df.groupby(<span class="code-string">'Branch_ID'</span>)[<span class="code-string">'Score'</span>].shift(1)
+    df[<span class="code-string">'Prev_Score'</span>] = df.groupby(<span class="code-string">'BRANCHID'</span>)[<span class="code-string">'Score'</span>].shift(1)
     
     <span class="code-comment"># Categorical hierarchy</span>
     <span class="code-keyword">for</span> cat <span class="code-keyword">in</span> [<span class="code-string">'Zone'</span>, <span class="code-string">'Division'</span>, <span class="code-string">'Region'</span>]:
@@ -505,19 +545,16 @@ FEATURE_COLS = [
         <!-- Module 3: train.py -->
         <div class="module-card">
             <div class="module-header">
-                <span class="file-name">ml_model/train.py</span>
-                <span style="font-size: 0.8rem; color: var(--accent-cyan);">Training Engine</span>
+                <span class="file-name">ml_model/ensemble.py</span>
+                <span style="font-size: 0.8rem; color: var(--accent-cyan);">Stacking Engine</span>
             </div>
-            <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.75rem;">Trains XGBRegressor and XGBClassifier with time-based train/test splits.</p>
-            <div class="code-block"><span class="code-keyword">def</span> <span class="code-func">train_model</span>():
-    regressor = XGBRegressor(n_estimators=300, max_depth=6, enable_categorical=True)
-    classifier = XGBClassifier(n_estimators=300, max_depth=6, enable_categorical=True)
-    
-    regressor.fit(X_train, y_score_train)
-    classifier.fit(X_train, y_grade_train)
-    
-    joblib.dump(regressor, MODEL_FILE_PATH)
-    joblib.dump(classifier, CLASSIFIER_FILE_PATH)</div>
+            <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.75rem;">Trains Stacking Ensemble (XGBoost + CatBoost + LightGBM + HistGB) with Ridge Meta-Learner.</p>
+            <div class="code-block"><span class="code-keyword">def</span> <span class="code-func">train_stacking_ensemble</span>():
+    stacking_reg = StackingRegressor(
+        estimators=[(<span class="code-string">'xgb'</span>, XGBRegressor()), (<span class="code-string">'cat'</span>, CatBoostRegressor()), (<span class="code-string">'lgb'</span>, LGBMRegressor())],
+        final_estimator=Ridge(alpha=1.0)
+    )
+    stacking_reg.fit(X_train, y_score_train)</div>
         </div>
 
         <!-- Module 4: predict.py -->
@@ -544,12 +581,12 @@ FEATURE_COLS = [
     </div>
 
     <!-- Feature Importances -->
-    <div class="section-title">Top Predictive Drivers (Model SHAP Weights)</div>
+    <div class="section-title">Top Predictive Drivers (Model SHAP / Feature Weights)</div>
     <div class="architecture-box">
         <div class="feature-item">
             <div class="feature-info">
                 <span>1. Previous Historical Audit Score (<code>Prev_Score</code>)</span>
-                <span style="font-weight: 700; color: var(--accent-cyan);">18.4%</span>
+                <span style="font-weight: 700; color: var(--accent-cyan);">25.6%</span>
             </div>
             <div class="feature-bar-bg"><div class="feature-bar-fill" style="width: 100%;"></div></div>
         </div>
@@ -557,33 +594,33 @@ FEATURE_COLS = [
         <div class="feature-item">
             <div class="feature-info">
                 <span>2. Regional Geographical Area (<code>Region</code>)</span>
-                <span style="font-weight: 700; color: var(--accent-cyan);">5.5%</span>
+                <span style="font-weight: 700; color: var(--accent-cyan);">5.8%</span>
             </div>
-            <div class="feature-bar-bg"><div class="feature-bar-fill" style="width: 30%;"></div></div>
+            <div class="feature-bar-bg"><div class="feature-bar-fill" style="width: 23%;"></div></div>
         </div>
 
         <div class="feature-item">
             <div class="feature-info">
-                <span>3. New Defaults Entry Rate (<code>NewDefault_Rate_Pct</code>)</span>
-                <span style="font-weight: 700; color: var(--accent-cyan);">2.8%</span>
+                <span>3. Early Warning PAR 1-30 Ratio (<code>PAR_1_30_Rate_Pct</code>)</span>
+                <span style="font-weight: 700; color: var(--accent-cyan);">3.2%</span>
             </div>
-            <div class="feature-bar-bg"><div class="feature-bar-fill" style="width: 15%;"></div></div>
+            <div class="feature-bar-bg"><div class="feature-bar-fill" style="width: 13%;"></div></div>
         </div>
 
         <div class="feature-item">
             <div class="feature-info">
-                <span>4. Collection Efficiency Sub-Score (<code>SubScore_CollectionEfficiency</code>)</span>
-                <span style="font-weight: 700; color: var(--accent-cyan);">2.6%</span>
+                <span>4. Operational Division (<code>Division</code>)</span>
+                <span style="font-weight: 700; color: var(--accent-cyan);">2.7%</span>
             </div>
-            <div class="feature-bar-bg"><div class="feature-bar-fill" style="width: 14%;"></div></div>
+            <div class="feature-bar-bg"><div class="feature-bar-fill" style="width: 11%;"></div></div>
         </div>
 
         <div class="feature-item">
             <div class="feature-info">
-                <span>5. Overall Collection Rate % (<code>CollectionRate_Pct</code>)</span>
-                <span style="font-weight: 700; color: var(--accent-cyan);">2.6%</span>
+                <span>5. New Defaults Rate % (<code>NewDefault_Rate_Pct</code>)</span>
+                <span style="font-weight: 700; color: var(--accent-cyan);">2.3%</span>
             </div>
-            <div class="feature-bar-bg"><div class="feature-bar-fill" style="width: 14%;"></div></div>
+            <div class="feature-bar-bg"><div class="feature-bar-fill" style="width: 9%;"></div></div>
         </div>
     </div>
 

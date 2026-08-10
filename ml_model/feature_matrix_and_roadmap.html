@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sonata Satark ML - Feature Matrix & Data Roadmap</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0a0e17;
+            --bg-card: rgba(30, 41, 59, 0.7);
+            --border-card: rgba(255, 255, 255, 0.08);
+            --accent-cyan: #06b6d4;
+            --accent-indigo: #6366f1;
+            --accent-green: #10b981;
+            --accent-amber: #f59e0b;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --font-main: 'Outfit', sans-serif;
+            --font-code: 'Fira Code', monospace;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background-color: var(--bg-primary);
+            color: var(--text-main);
+            font-family: var(--font-main);
+            line-height: 1.6;
+            padding: 2.5rem;
+            background-image: 
+                radial-gradient(at 15% 15%, rgba(99, 102, 241, 0.15) 0px, transparent 40%),
+                radial-gradient(at 85% 85%, rgba(16, 185, 129, 0.12) 0px, transparent 40%);
+            min-height: 100vh;
+        }
+
+        .container { max-width: 1300px; margin: 0 auto; }
+
+        header {
+            background: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.95));
+            border: 1px solid var(--border-card);
+            border-radius: 24px;
+            padding: 2.5rem;
+            margin-bottom: 2.5rem;
+            backdrop-filter: blur(12px);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+        }
+
+        .badge {
+            display: inline-block;
+            background: rgba(16, 185, 129, 0.2);
+            color: var(--accent-green);
+            border: 1px solid rgba(16, 185, 129, 0.4);
+            padding: 0.35rem 0.85rem;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            margin-bottom: 1rem;
+            text-transform: uppercase;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, #ffffff 0%, #34d399 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 0.5rem;
+        }
+
+        header p { color: var(--text-muted); font-size: 1.1rem; max-width: 850px; }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2.5rem;
+        }
+
+        .stat-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-card);
+            border-radius: 18px;
+            padding: 1.75rem;
+            backdrop-filter: blur(10px);
+        }
+
+        .stat-val { font-size: 2.5rem; font-weight: 800; }
+        .stat-label { color: var(--text-muted); font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 0.25rem; }
+
+        .section-title {
+            font-size: 1.6rem;
+            font-weight: 700;
+            margin-bottom: 1.25rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .section-title::before {
+            content: '';
+            display: inline-block;
+            width: 5px;
+            height: 24px;
+            background: linear-gradient(180deg, var(--accent-green), var(--accent-cyan));
+            border-radius: 4px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 2.5rem;
+            background: var(--bg-card);
+            border-radius: 16px;
+            overflow: hidden;
+            border: 1px solid var(--border-card);
+        }
+
+        th, td {
+            padding: 1rem 1.25rem;
+            text-align: left;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        th {
+            background: rgba(15, 23, 42, 0.8);
+            color: var(--accent-cyan);
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        tr:hover td { background: rgba(255, 255, 255, 0.02); }
+
+        .status-tag {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 12px;
+            font-weight: 700;
+            font-size: 0.8rem;
+        }
+
+        .tag-active { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); }
+        .tag-proposed { background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); }
+
+        footer {
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            padding-top: 2rem;
+            border-top: 1px solid var(--border-card);
+            margin-top: 3rem;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <div class="badge">Sonata Satark AI Feature Matrix</div>
+        <h1>Implemented vs Proposed Features Roadmap</h1>
+        <p>Complete audit parameter mapping showing 51 active features in your production ML model alongside high-value new data points recommended for future integration.</p>
+    </header>
+
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-val" style="color: #34d399;">51</div>
+            <div class="stat-label">✅ Currently Implemented Features</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-val" style="color: #fbbf24;">10</div>
+            <div class="stat-label">🚀 Proposed New Data Points</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-val" style="color: #60a5fa;">72.8% &rarr; 85%+</div>
+            <div class="stat-label">High-Risk Detection Accuracy (C/D)</div>
+        </div>
+    </div>
+
+    <!-- Active Features Table -->
+    <div class="section-title">1. ✅ Implemented Features (Live in ml_model/config.py)</div>
+    <table>
+        <thead>
+            <tr>
+                <th>Category</th>
+                <th>Feature Name</th>
+                <th>Formula / Definition</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Geographic Hierarchy</td>
+                <td><code>Zone, Division, Region</code></td>
+                <td>Categorical Region Hierarchy (Region is #2 Top Driver)</td>
+                <td><span class="status-tag tag-active">Active</span></td>
+            </tr>
+            <tr>
+                <td>Credit Ratios</td>
+                <td><code>NPA_Rate_Pct</code></td>
+                <td>Cur_NPA_Amt / TotalPrincipalOS * 100</td>
+                <td><span class="status-tag tag-active">Active</span></td>
+            </tr>
+            <tr>
+                <td>Credit Ratios</td>
+                <td><code>Arrear_Rate_Pct</code></td>
+                <td>Cur_ArrearAmt / TotalPrincipalOS * 100</td>
+                <td><span class="status-tag tag-active">Active</span></td>
+            </tr>
+            <tr>
+                <td>Credit Ratios</td>
+                <td><code>WriteOff_Rate_Pct, GoodLoan_Rate_Pct</code></td>
+                <td>WriteOffCount & GoodLoanCount / TotalLoans * 100</td>
+                <td><span class="status-tag tag-active">Active</span></td>
+            </tr>
+            <tr>
+                <td>Credit Ratios</td>
+                <td><code>NewDefault_Rate_Pct, Deceased_Rate_Pct</code></td>
+                <td>NewDefaultsThisMonth & DeceasedCount / TotalLoans * 100</td>
+                <td><span class="status-tag tag-active">Active</span></td>
+            </tr>
+            <tr>
+                <td>Velocity Trends</td>
+                <td><code>NPA_Amt_Change_Pct, Arrear_Amt_Change_Pct</code></td>
+                <td>Month-over-Month growth percentage</td>
+                <td><span class="status-tag tag-active">Active</span></td>
+            </tr>
+            <tr>
+                <td>Collections</td>
+                <td><code>CollectionRate_Pct, AvgDaysSinceCollection</code></td>
+                <td>Collection efficiency % & Collection gap days</td>
+                <td><span class="status-tag tag-active">Active</span></td>
+            </tr>
+            <tr>
+                <td>Concentration</td>
+                <td><code>TopCenter_NPAConc_Pct, TopStaff_NPAConc_Pct</code></td>
+                <td>NPA concentration in top single center & top single staff</td>
+                <td><span class="status-tag tag-active">Active</span></td>
+            </tr>
+            <tr>
+                <td>SP Sub-Scores</td>
+                <td><code>Score_* (17), SubScore_* (5)</code></td>
+                <td>22 SQL Stored Procedure sub-scores</td>
+                <td><span class="status-tag tag-active">Active</span></td>
+            </tr>
+            <tr>
+                <td>Scale</td>
+                <td><code>TotalLoans, TotalPrincipalOS</code></td>
+                <td>Total Active Loans & Principal Outstanding Amount</td>
+                <td><span class="status-tag tag-active">Active</span></td>
+            </tr>
+        </tbody>
+    </table>
+
+    <!-- Proposed Features Table -->
+    <div class="section-title">2. 🚀 Proposed Features to Take into Consideration (Roadmap)</div>
+    <table>
+        <thead>
+            <tr>
+                <th>Category</th>
+                <th>Proposed Parameter</th>
+                <th>Mathematical Formula</th>
+                <th>Audit & Risk Rationale</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Credit Early Warning</td>
+                <td><code>PAR_1_30_Rate_Pct</code></td>
+                <td>PAR 1-30 Amount / TotalPrincipalOS * 100</td>
+                <td><strong>Single best early warning signal</strong> 60 days before NPA slippage.</td>
+                <td><span class="status-tag tag-proposed">Proposed</span></td>
+            </tr>
+            <tr>
+                <td>Credit Early Warning</td>
+                <td><code>PAR_31_60_Rate_Pct & PAR_61_90_Rate_Pct</code></td>
+                <td>PAR 31-90 Amount / TotalPrincipalOS * 100</td>
+                <td>Catches mid-bucket collection slippage.</td>
+                <td><span class="status-tag tag-proposed">Proposed</span></td>
+            </tr>
+            <tr>
+                <td>Staff Operations</td>
+                <td><code>Staff_Caseload_Ratio</code></td>
+                <td>TotalLoans / Active_Staff_Count</td>
+                <td>High caseload per staff leads to skipped center visits & audit failures.</td>
+                <td><span class="status-tag tag-proposed">Proposed</span></td>
+            </tr>
+            <tr>
+                <td>Staff Operations</td>
+                <td><code>Staff_Overstay_12M_Pct</code></td>
+                <td>% Staff at branch &gt; 12 Months</td>
+                <td><strong>Audit Checklist Item #17</strong>. Over-staying staff develop collusion/bad habits.</td>
+                <td><span class="status-tag tag-proposed">Proposed</span></td>
+            </tr>
+            <tr>
+                <td>Staff Operations</td>
+                <td><code>Staff_Tenure_Under3M_Pct</code></td>
+                <td>% Staff with tenure &lt; 3 Months</td>
+                <td>Inexperienced staff increase procedural & operational errors.</td>
+                <td><span class="status-tag tag-proposed">Proposed</span></td>
+            </tr>
+            <tr>
+                <td>Supervision</td>
+                <td><code>Supervisor_Visit_Shortfall_Pct</code></td>
+                <td>(Required - Actual BM Visits) / Required * 100</td>
+                <td>Measures lack of supervisory oversight from BM & Hub In-Charge.</td>
+                <td><span class="status-tag tag-proposed">Proposed</span></td>
+            </tr>
+            <tr>
+                <td>Liquidity / Cash</td>
+                <td><code>Vault_Cash_Overlimit_Days</code></td>
+                <td>Days count where Vault Cash &gt; ₹25,000</td>
+                <td><strong>Audit Checklist Item #13</strong>. Unbanked cash, theft risk, poor cash mgmt.</td>
+                <td><span class="status-tag tag-proposed">Proposed</span></td>
+            </tr>
+            <tr>
+                <td>Liquidity / Cash</td>
+                <td><code>Bank_Deposit_Reconcile_Mismatch</code></td>
+                <td>Slip vs Register Deposit Mismatch Count</td>
+                <td><strong>Audit Checklist Item #53</strong>. Accounting delay or cash misplacement.</td>
+                <td><span class="status-tag tag-proposed">Proposed</span></td>
+            </tr>
+            <tr>
+                <td>Center Discipline</td>
+                <td><code>Avg_Center_Size</code></td>
+                <td>Active Clients / Active Centers</td>
+                <td><strong>Audit Checklist Item #10</strong>. Running avg &lt; 6 clients shows failing JLG discipline.</td>
+                <td><span class="status-tag tag-proposed">Proposed</span></td>
+            </tr>
+            <tr>
+                <td>Audit Software</td>
+                <td><code>Audit360_Compliance_Delay_Days</code></td>
+                <td>Avg days to resolve findings in Audit360</td>
+                <td><strong>Audit Checklist Item #37</strong>. Delays show uncooperative management.</td>
+                <td><span class="status-tag tag-proposed">Proposed</span></td>
+            </tr>
+            <tr>
+                <td>Audit Software</td>
+                <td><code>False_Compliance_Count</code></td>
+                <td>Count of rejected false compliance submissions</td>
+                <td><strong>Audit Checklist Item #36</strong>. Strong indicator of high audit risk.</td>
+                <td><span class="status-tag tag-proposed">Proposed</span></td>
+            </tr>
+            <tr>
+                <td>Demographics</td>
+                <td><code>Branch_Age_Months</code></td>
+                <td>Total months branch has been active</td>
+                <td>Young branches (&lt;6M) have high growth/procedural risk profiles.</td>
+                <td><span class="status-tag tag-proposed">Proposed</span></td>
+            </tr>
+        </tbody>
+    </table>
+
+    <footer>
+        <p>Sonata Satark AI Feature Matrix &bull; Implemented vs Proposed Roadmap Overview</p>
+    </footer>
+</div>
+
+</body>
+</html>

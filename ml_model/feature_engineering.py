@@ -25,22 +25,65 @@ def transform_features(df: pd.DataFrame, is_training: bool = True) -> pd.DataFra
     principal_os = df['TotalPrincipalOS'].replace(0, np.nan) if 'TotalPrincipalOS' in df.columns else 1
     total_loans = df['TotalLoans'].replace(0, np.nan) if 'TotalLoans' in df.columns else 1
 
-    df['NPA_Rate_Pct'] = (df['Cur_NPA_Amt'] * 100.0 / principal_os).fillna(0)
-    df['Arrear_Rate_Pct'] = (df['Cur_ArrearAmt'] * 100.0 / principal_os).fillna(0)
-    df['WriteOff_Rate_Pct'] = (df['WriteOffCount'] * 100.0 / total_loans).fillna(0)
-    df['GoodLoan_Rate_Pct'] = (df['GoodLoanCount'] * 100.0 / total_loans).fillna(0)
-    df['NewDefault_Rate_Pct'] = (df['NewDefaultsThisMonth'] * 100.0 / total_loans).fillna(0)
-    df['Deceased_Rate_Pct'] = (df['DeceasedCount'] * 100.0 / total_loans).fillna(0)
+    df['NPA_Rate_Pct'] = (df['Cur_NPA_Amt'] * 100.0 / principal_os).fillna(0) if 'Cur_NPA_Amt' in df.columns else 0.0
 
-    # 3. Historical Previous Audit Score (Lag 1 per Branch)
-    if 'Branch_ID' in df.columns and 'Score' in df.columns:
-        df['Prev_Score'] = df.groupby('Branch_ID')['Score'].shift(1)
-        df['Prev_Score'] = df['Prev_Score'].fillna(df['Score'])
+    df['Arrear_Rate_Pct'] = (df['Cur_ArrearAmt'] * 100.0 / principal_os).fillna(0) if 'Cur_ArrearAmt' in df.columns else 0.0
+    
+    # Early Warning PAR Bucket Ratios (%)
+    df['PAR_1_30_Rate_Pct'] = (df['PAR_1_30_Amt'] * 100.0 / principal_os).fillna(0) if 'PAR_1_30_Amt' in df.columns else 0.0
+    df['PAR_31_60_Rate_Pct'] = (df['PAR_31_60_Amt'] * 100.0 / principal_os).fillna(0) if 'PAR_31_60_Amt' in df.columns else 0.0
+    df['PAR_61_90_Rate_Pct'] = (df['PAR_61_90_Amt'] * 100.0 / principal_os).fillna(0) if 'PAR_61_90_Amt' in df.columns else 0.0
+
+    df['WriteOff_Rate_Pct'] = (df['WriteOffCount'] * 100.0 / total_loans).fillna(0) if 'WriteOffCount' in df.columns else 0.0
+    df['GoodLoan_Rate_Pct'] = (df['GoodLoanCount'] * 100.0 / total_loans).fillna(0) if 'GoodLoanCount' in df.columns else 0.0
+    df['NewDefault_Rate_Pct'] = (df['NewDefaultsThisMonth'] * 100.0 / total_loans).fillna(0) if 'NewDefaultsThisMonth' in df.columns else 0.0
+    df['Deceased_Rate_Pct'] = (df['DeceasedCount'] * 100.0 / total_loans).fillna(0) if 'DeceasedCount' in df.columns else 0.0
+
+    # Staff Operations Risk (Loans per Staff Member)
+    if 'Staff_Caseload_Ratio' in df.columns:
+        df['Staff_Caseload_Ratio'] = df['Staff_Caseload_Ratio'].fillna(0.0)
+    elif 'ActiveStaffCount' in df.columns:
+        staff_cnt = df['ActiveStaffCount'].replace(0, np.nan)
+        df['Staff_Caseload_Ratio'] = (df['TotalLoans'] / staff_cnt).fillna(0.0)
     else:
-        df['Prev_Score'] = 50.0
+        df['Staff_Caseload_Ratio'] = 0.0
 
-    # 4. Fill missing default values for numerical sub-scores and metrics
+    # Previous Audit Score Feature
+    if 'Prev_Score' in df.columns:
+        df['Prev_Score'] = df['Prev_Score'].fillna(df['Score'] if 'Score' in df.columns else 70.0)
+    elif 'BRANCHID' in df.columns and 'AsOnDate' in df.columns and 'Score' in df.columns:
+        df = df.sort_values(['BRANCHID', 'AsOnDate'])
+        df['Prev_Score'] = df.groupby('BRANCHID')['Score'].shift(1).fillna(df['Score'])
+    else:
+        df['Prev_Score'] = 70.0
+
+    # Center Discipline Risk (Active Borrowers per Center)
+    if 'Avg_Center_Size' in df.columns:
+        df['Avg_Center_Size'] = df['Avg_Center_Size'].fillna(0.0)
+    elif 'ActiveCenterCount' in df.columns:
+        cntr_cnt = df['ActiveCenterCount'].replace(0, np.nan)
+        df['Avg_Center_Size'] = (df['TotalLoans'] / cntr_cnt).fillna(0.0)
+    else:
+        df['Avg_Center_Size'] = 0.0
+
+    # 3. Fill missing default values for numerical sub-scores and metrics
     fill_defaults = {
+        'Prev_Score': 70.0,
+        'NPA_Rate_Pct': 0.0,
+        'Arrear_Rate_Pct': 0.0,
+        'PAR_1_30_Rate_Pct': 0.0,
+        'PAR_31_60_Rate_Pct': 0.0,
+        'PAR_61_90_Rate_Pct': 0.0,
+        'WriteOff_Rate_Pct': 0.0,
+        'GoodLoan_Rate_Pct': 0.0,
+        'NewDefault_Rate_Pct': 0.0,
+        'Deceased_Rate_Pct': 0.0,
+        'Staff_Caseload_Ratio': 0.0,
+        'ActiveStaffCount': 1,
+        'Staff_Overstay_12M_Pct': 0.0,
+        'Staff_Tenure_Under3M_Pct': 0.0,
+        'Avg_Center_Size': 0.0,
+        'ActiveCenterCount': 1,
         'NPA_Amt_Change_Pct': 0.0,
         'Arrear_Amt_Change_Pct': 0.0,
         'CollectionRate_Pct': 100.0,
@@ -74,6 +117,7 @@ def transform_features(df: pd.DataFrame, is_training: bool = True) -> pd.DataFra
         'SubScore_CustomerRisk': 0,
         'SubScore_ConcentrationRisk': 0
     }
+
     
     for col, default_val in fill_defaults.items():
         if col in df.columns:
@@ -81,9 +125,21 @@ def transform_features(df: pd.DataFrame, is_training: bool = True) -> pd.DataFra
         else:
             df[col] = default_val
 
-    # 5. Handle infinity values for numerical columns
+    # 5. Handle infinity values & guarantee presence for all numerical columns
+    if 'Prev_Score' in df.columns:
+        df['Prev_Score'] = df['Prev_Score'].fillna(70.0)
+        df['Prev_Score'] = df['Prev_Score'].apply(lambda x: 70.0 if x == 0.0 else x)
+    elif 'RiskScore' in df.columns:
+        df['Prev_Score'] = df['RiskScore'].fillna(70.0)
+        df['Prev_Score'] = df['Prev_Score'].apply(lambda x: 70.0 if x == 0.0 else x)
+    else:
+        df['Prev_Score'] = 70.0
+
     num_cols = [c for c in FEATURE_COLS if c not in cat_cols]
-    df[num_cols] = df[num_cols].replace([np.inf, -np.inf], 0.0)
+    for c in num_cols:
+        if c not in df.columns:
+            df[c] = 0.0
+    df[num_cols] = df[num_cols].replace([np.inf, -np.inf], 0.0).fillna(0.0)
 
     if is_training:
         print(f"  [FEATURE ENGINEERING] Successfully transformed {len(FEATURE_COLS)} features across {len(df)} rows.")
