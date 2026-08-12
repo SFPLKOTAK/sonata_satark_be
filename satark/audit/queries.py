@@ -289,28 +289,51 @@ class GetAuditFeedbackQueryHandler(QueryHandler):
 
             feedback_list = []
             feedback_audit_id = audit_id
+
             for row in rows:
                 row_dict = dict(zip(columns, row))
                 if row_dict.get("audit_id") and not feedback_audit_id:
                     feedback_audit_id = row_dict.get("audit_id")
                 
-                normal_file_id = row_dict.get("normal_file_id")
-                confidential_file_id = row_dict.get("confidential_file_id")
+                cid = row_dict.get("checklist_id")
+
+                # Parse JSON arrays returned directly by Stored Procedure (Option 1)
+                n_files = []
+                nf_json = row_dict.get("normal_files_json")
+                if nf_json:
+                    try:
+                        n_files = json.loads(nf_json) if isinstance(nf_json, str) else nf_json
+                    except Exception:
+                        pass
+                
+                c_files = []
+                cf_json = row_dict.get("confidential_files_json")
+                if cf_json:
+                    try:
+                        c_files = json.loads(cf_json) if isinstance(cf_json, str) else cf_json
+                    except Exception:
+                        pass
+
+                # Legacy single column fallbacks
+                if not n_files and row_dict.get("normal_file_id"):
+                    n_files = [{"id": row_dict.get("normal_file_id"), "filename": row_dict.get("normal_file_name")}]
+                
+                if not c_files and row_dict.get("confidential_file_id"):
+                    c_files = [{"id": row_dict.get("confidential_file_id"), "filename": row_dict.get("confidential_file_name")}]
+
+                legacy_n_file = n_files[-1] if n_files else None
+                legacy_c_file = c_files[-1] if c_files else None
 
                 feedback_list.append({
-                    "checklistId": row_dict.get("checklist_id"),
+                    "checklistId": cid,
                     "answer": row_dict.get("answer"),
                     "normalRemark": row_dict.get("normal_remark"),
                     "status": row_dict.get("status"),
                     "confidentialRemark": row_dict.get("confidential_remark"),
-                    "normalFile": {
-                        "id": normal_file_id,
-                        "filename": row_dict.get("normal_file_name")
-                    } if normal_file_id else None,
-                    "confidentialFile": {
-                        "id": confidential_file_id,
-                        "filename": row_dict.get("confidential_file_name")
-                    } if confidential_file_id else None,
+                    "normalFile": legacy_n_file,
+                    "confidentialFile": legacy_c_file,
+                    "normalFiles": n_files,
+                    "confidentialFiles": c_files,
                 })
 
             return {'success': True, 'feedback': feedback_list, 'auditId': feedback_audit_id}
@@ -1434,6 +1457,41 @@ class GetReviewPointsQueryHandler(QueryHandler):
                 """, [audit_id, audit_id])
                 b_cols = [d[0] for d in cursor.description]
                 branch_points = [dict(zip(b_cols, row)) for row in cursor.fetchall()]
+
+                # Fetch all active normal & confidential files for branch points
+                if branch_points:
+                    fb_ids = [p['feedback_id'] for p in branch_points if p.get('feedback_id')]
+                    if fb_ids:
+                        cursor.execute("""
+                            SELECT feedback_id, id, file_name 
+                            FROM dbo.audit_branch_normal_files 
+                            WHERE is_archived = 0
+                            ORDER BY id ASC
+                        """)
+                        all_nf = cursor.fetchall()
+                        nf_by_fbid = {}
+                        for fbid, fid, fname in all_nf:
+                            if fbid not in nf_by_fbid:
+                                nf_by_fbid[fbid] = []
+                            nf_by_fbid[fbid].append({'id': fid, 'file_name': fname})
+
+                        cursor.execute("""
+                            SELECT feedback_id, id, file_name 
+                            FROM dbo.audit_branch_confidential_files 
+                            WHERE is_archived = 0
+                            ORDER BY id ASC
+                        """)
+                        all_cf = cursor.fetchall()
+                        cf_by_fbid = {}
+                        for fbid, fid, fname in all_cf:
+                            if fbid not in cf_by_fbid:
+                                cf_by_fbid[fbid] = []
+                            cf_by_fbid[fbid].append({'id': fid, 'file_name': fname})
+
+                        for bp in branch_points:
+                            fbid = bp.get('feedback_id')
+                            bp['normal_files'] = nf_by_fbid.get(fbid, [])
+                            bp['confidential_files'] = cf_by_fbid.get(fbid, [])
 
                 # 3. Center level points
                 cursor.execute("""

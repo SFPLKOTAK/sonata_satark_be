@@ -394,37 +394,65 @@ class SaveAuditFeedbackCommandHandler(CommandHandler):
                         normal_remark = item.get('normal_remark')
                         confidential_remark = item.get('confidential_remark')
 
-                        # Process normal file
-                        normal_file = item.get('normal_file')
-                        has_new_normal_file = False
-                        normal_file_bytes = None
-                        normal_file_name = None
-                        if normal_file and isinstance(normal_file, dict) and normal_file.get('base64'):
-                            has_new_normal_file = True
-                            normal_file_name = normal_file.get('filename', 'upload.png')
-                            base64_str = normal_file.get('base64')
-                            if ';base64,' in base64_str:
-                                _, base64_data = base64_str.split(';base64,')
-                            else:
-                                base64_data = base64_str
-                            decoded_bytes = base64.b64decode(base64_data)
-                            normal_file_bytes, normal_file_name = compress_file_backend(decoded_bytes, normal_file_name)
+                        # Process normal files (supports multiple files array or single object)
+                        raw_normal_files = item.get('normal_files')
+                        if not raw_normal_files:
+                            nf = item.get('normal_file')
+                            if nf:
+                                raw_normal_files = nf if isinstance(nf, list) else [nf]
+                        elif not isinstance(raw_normal_files, list):
+                            raw_normal_files = [raw_normal_files]
 
-                        # Process confidential file
-                        confidential_file = item.get('confidential_file')
-                        has_new_confidential_file = False
-                        confidential_file_bytes = None
-                        confidential_file_name = None
-                        if confidential_file and isinstance(confidential_file, dict) and confidential_file.get('base64'):
-                            has_new_confidential_file = True
-                            confidential_file_name = confidential_file.get('filename', 'upload_conf.png')
-                            base64_str = confidential_file.get('base64')
-                            if ';base64,' in base64_str:
-                                _, base64_data = base64_str.split(';base64,')
-                            else:
-                                base64_data = base64_str
-                            decoded_bytes = base64.b64decode(base64_data)
-                            confidential_file_bytes, confidential_file_name = compress_file_backend(decoded_bytes, confidential_file_name)
+                        has_new_normal_files = False
+                        processed_normal_files = []
+                        seen_normal_b64 = set()
+                        if raw_normal_files:
+                            for nf_item in raw_normal_files:
+                                if isinstance(nf_item, dict) and nf_item.get('base64'):
+                                    base64_str = nf_item.get('base64')
+                                    if base64_str in seen_normal_b64:
+                                        continue
+                                    seen_normal_b64.add(base64_str)
+
+                                    has_new_normal_files = True
+                                    nf_name = nf_item.get('filename', 'upload.png')
+                                    if ';base64,' in base64_str:
+                                        _, base64_data = base64_str.split(';base64,')
+                                    else:
+                                        base64_data = base64_str
+                                    decoded_bytes = base64.b64decode(base64_data)
+                                    compressed_bytes, compressed_name = compress_file_backend(decoded_bytes, nf_name)
+                                    processed_normal_files.append((compressed_name, compressed_bytes))
+
+                        # Process confidential files (supports multiple files array or single object)
+                        raw_confidential_files = item.get('confidential_files')
+                        if not raw_confidential_files:
+                            cf = item.get('confidential_file')
+                            if cf:
+                                raw_confidential_files = cf if isinstance(cf, list) else [cf]
+                        elif not isinstance(raw_confidential_files, list):
+                            raw_confidential_files = [raw_confidential_files]
+
+                        has_new_confidential_files = False
+                        processed_confidential_files = []
+                        seen_confidential_b64 = set()
+                        if raw_confidential_files:
+                            for cf_item in raw_confidential_files:
+                                if isinstance(cf_item, dict) and cf_item.get('base64'):
+                                    base64_str = cf_item.get('base64')
+                                    if base64_str in seen_confidential_b64:
+                                        continue
+                                    seen_confidential_b64.add(base64_str)
+
+                                    has_new_confidential_files = True
+                                    cf_name = cf_item.get('filename', 'upload_conf.png')
+                                    if ';base64,' in base64_str:
+                                        _, base64_data = base64_str.split(';base64,')
+                                    else:
+                                        base64_data = base64_str
+                                    decoded_bytes = base64.b64decode(base64_data)
+                                    compressed_bytes, compressed_name = compress_file_backend(decoded_bytes, cf_name)
+                                    processed_confidential_files.append((compressed_name, compressed_bytes))
 
                         # Parse subItems counts from normal_remark if present
                         total_sub_points = None
@@ -466,11 +494,13 @@ class SaveAuditFeedbackCommandHandler(CommandHandler):
                         fb_row = cursor.fetchone()
 
                         is_confidential_remark_present = 1 if confidential_remark else 0
-                        is_confidential_file_present = 1 if has_new_confidential_file else (fb_row[2] if fb_row else 0)
+                        is_confidential_file_present = 1 if (has_new_confidential_files or (fb_row and fb_row[2])) else 0
+
+                        last_normal_name = processed_normal_files[-1][0] if processed_normal_files else None
 
                         if fb_row:
                             fb_id = fb_row[0]
-                            final_normal_file_path = normal_file_name if has_new_normal_file else fb_row[1]
+                            final_normal_file_path = last_normal_name if last_normal_name else fb_row[1]
                             cursor.execute("""
                                 UPDATE dbo.audit_branch_checklist_feedback
                                 SET answer = %s,
@@ -501,7 +531,7 @@ class SaveAuditFeedbackCommandHandler(CommandHandler):
                                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, GETDATE(), GETDATE())
                             """, [
                                 audit_id, branch_id, user.UserID, checklist_id, section_code, section_name,
-                                intent_code, intent_title, answer, normal_remark, normal_file_name,
+                                intent_code, intent_title, answer, normal_remark, last_normal_name,
                                 is_confidential_remark_present, is_confidential_file_present,
                                 status_to, total_sub_points, sub_points_yes_count, sub_points_no_count,
                                 user.UserID
@@ -509,22 +539,14 @@ class SaveAuditFeedbackCommandHandler(CommandHandler):
                             cursor.execute("SELECT @@IDENTITY")
                             fb_id = int(cursor.fetchone()[0])
 
-                        # Store normal file binary in dbo.audit_branch_normal_files
-                        new_normal_file_id = None
-                        if has_new_normal_file:
-                            cursor.execute("""
-                                UPDATE dbo.audit_branch_normal_files
-                                SET is_archived = 1, updated_at = GETDATE()
-                                WHERE branch_id = %s AND checklist_id = %s AND is_archived = 0
-                            """, [branch_id, checklist_id])
+                        # Store normal files binary in dbo.audit_branch_normal_files (append without archiving previous active files)
+                        for nf_name, nf_bytes in processed_normal_files:
                             cursor.execute("""
                                 INSERT INTO dbo.audit_branch_normal_files (
                                     feedback_id, branch_id, checklist_id, file_name, file_content,
                                     is_archived, uploaded_by, created_at, updated_at
                                 ) VALUES (%s, %s, %s, %s, %s, 0, %s, GETDATE(), GETDATE())
-                            """, [fb_id, branch_id, checklist_id, normal_file_name, normal_file_bytes, user.UserID])
-                            cursor.execute("SELECT @@IDENTITY")
-                            new_normal_file_id = int(cursor.fetchone()[0])
+                            """, [fb_id, branch_id, checklist_id, nf_name, nf_bytes, user.UserID])
 
                         # Handle confidential remark in dbo.audit_branch_confidential_remarks
                         if confidential_remark is not None:
@@ -549,37 +571,39 @@ class SaveAuditFeedbackCommandHandler(CommandHandler):
                                     ) VALUES (%s, %s, %s, %s, %s, GETDATE(), GETDATE())
                                 """, [fb_id, branch_id, checklist_id, confidential_remark, user.UserID])
 
-                        # Store confidential file binary in dbo.audit_branch_confidential_files
-                        new_confidential_file_id = None
-                        if has_new_confidential_file:
-                            cursor.execute("""
-                                UPDATE dbo.audit_branch_confidential_files
-                                SET is_archived = 1, updated_at = GETDATE()
-                                WHERE branch_id = %s AND checklist_id = %s AND is_archived = 0
-                            """, [branch_id, checklist_id])
+                        # Store confidential files binary in dbo.audit_branch_confidential_files (append without archiving previous active files)
+                        for cf_name, cf_bytes in processed_confidential_files:
                             cursor.execute("""
                                 INSERT INTO dbo.audit_branch_confidential_files (
                                     feedback_id, branch_id, checklist_id, confidential_file_path,
                                     file_name, file_content, is_archived, user_id, created_at, updated_at
                                 ) VALUES (%s, %s, %s, NULL, %s, %s, 0, %s, GETDATE(), GETDATE())
-                            """, [fb_id, branch_id, checklist_id, confidential_file_name,
-                                  confidential_file_bytes, user.UserID])
-                            cursor.execute("SELECT @@IDENTITY")
-                            new_confidential_file_id = int(cursor.fetchone()[0])
+                            """, [fb_id, branch_id, checklist_id, cf_name, cf_bytes, user.UserID])
 
-                        # Build saved_files response
-                        if new_normal_file_id or new_confidential_file_id:
-                            saved_files[checklist_id] = {}
-                            if new_normal_file_id:
-                                saved_files[checklist_id]['normalFile'] = {
-                                    'id': new_normal_file_id,
-                                    'filename': normal_file_name
-                                }
-                            if new_confidential_file_id:
-                                saved_files[checklist_id]['confidentialFile'] = {
-                                    'id': new_confidential_file_id,
-                                    'filename': confidential_file_name
-                                }
+                        # Query all currently active normal and confidential files for this checklist point
+                        cursor.execute("""
+                            SELECT id, file_name FROM dbo.audit_branch_normal_files
+                            WHERE branch_id = %s AND checklist_id = %s AND is_archived = 0
+                            ORDER BY id ASC
+                        """, [branch_id, checklist_id])
+                        active_normal_rows = cursor.fetchall()
+
+                        cursor.execute("""
+                            SELECT id, file_name FROM dbo.audit_branch_confidential_files
+                            WHERE branch_id = %s AND checklist_id = %s AND is_archived = 0
+                            ORDER BY id ASC
+                        """, [branch_id, checklist_id])
+                        active_confidential_rows = cursor.fetchall()
+
+                        normal_files_list = [{'id': r[0], 'filename': r[1]} for r in active_normal_rows]
+                        confidential_files_list = [{'id': r[0], 'filename': r[1]} for r in active_confidential_rows]
+
+                        saved_files[checklist_id] = {
+                            'normalFiles': normal_files_list,
+                            'confidentialFiles': confidential_files_list,
+                            'normalFile': normal_files_list[-1] if normal_files_list else None,
+                            'confidentialFile': confidential_files_list[-1] if confidential_files_list else None
+                        }
 
                     # General Remarks — log to dbo.audit_activity_log (original pre-CQRS behaviour)
                     if general_remarks:
@@ -608,36 +632,8 @@ class ArchiveFeedbackFileCommandHandler(CommandHandler):
         try:
             with transaction.atomic():
                 with connection.cursor() as cursor:
-                    if is_confidential:
-                        # 1. Read payload
-                        cursor.execute("SELECT file_name, file_payload FROM dbo.audit_branch_checklist_feedback_confidential_files WHERE confidential_file_id = %s", [file_id])
-                        row = cursor.fetchone()
-                        if not row:
-                            return {'success': False, 'message': 'File not found', 'status_code': 404}
-                        
-                        fname, payload = row
-                        # 2. Insert into archive
-                        cursor.execute("""
-                            INSERT INTO dbo.archive_audit_branch_checklist_feedback_confidential_files (confidential_file_id, file_name, file_payload)
-                            VALUES (%s, %s, %s)
-                        """, [file_id, fname, payload])
-                        # 3. Delete original
-                        cursor.execute("DELETE FROM dbo.audit_branch_checklist_feedback_confidential_files WHERE confidential_file_id = %s", [file_id])
-                        # 4. Clear reference in feedback table
-                        cursor.execute("UPDATE dbo.audit_branch_checklist_feedback SET confidential_file_id = NULL WHERE confidential_file_id = %s", [file_id])
-                    else:
-                        cursor.execute("SELECT file_name, file_payload FROM dbo.audit_branch_checklist_feedback_files WHERE file_id = %s", [file_id])
-                        row = cursor.fetchone()
-                        if not row:
-                            return {'success': False, 'message': 'File not found', 'status_code': 404}
-                        
-                        fname, payload = row
-                        cursor.execute("""
-                            INSERT INTO dbo.archive_audit_branch_checklist_feedback_files (file_id, file_name, file_payload)
-                            VALUES (%s, %s, %s)
-                        """, [file_id, fname, payload])
-                        cursor.execute("DELETE FROM dbo.audit_branch_checklist_feedback_files WHERE file_id = %s", [file_id])
-                        cursor.execute("UPDATE dbo.audit_branch_checklist_feedback SET normal_file_id = NULL WHERE normal_file_id = %s", [file_id])
+                    tbl = "audit_branch_confidential_files" if is_confidential else "audit_branch_normal_files"
+                    cursor.execute(f"UPDATE dbo.{tbl} SET is_archived = 1, updated_at = GETDATE() WHERE id = %s", [file_id])
 
             return {'success': True, 'message': 'File archived successfully'}
         except Exception as e:
