@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ML Pipeline Architecture - Sonata Satark</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: rgba(30, 41, 59, 0.7);
+            --primary: #3b82f6;
+            --primary-glow: rgba(59, 130, 246, 0.5);
+            --accent: #10b981;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            margin: 0;
+            padding: 40px 20px;
+            background-image: 
+                radial-gradient(circle at 15% 50%, rgba(59, 130, 246, 0.15), transparent 25%),
+                radial-gradient(circle at 85% 30%, rgba(16, 185, 129, 0.15), transparent 25%);
+            background-attachment: fixed;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 60px;
+            animation: fadeInDown 1s ease-out;
+        }
+
+        h1 {
+            font-size: 3rem;
+            font-weight: 800;
+            margin-bottom: 10px;
+            background: linear-gradient(to right, #60a5fa, #34d399);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        p.subtitle {
+            font-size: 1.2rem;
+            color: var(--text-muted);
+        }
+
+        /* Glassmorphism Cards */
+        .card {
+            background: var(--card-bg);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 40px var(--primary-glow);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        h2 {
+            font-weight: 600;
+            font-size: 1.8rem;
+            border-bottom: 2px solid var(--primary);
+            display: inline-block;
+            padding-bottom: 5px;
+            margin-top: 0;
+        }
+
+        /* Pipeline Flow Grid */
+        .pipeline-flow {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-top: 40px;
+        }
+
+        .flow-step {
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid rgba(59, 130, 246, 0.3);
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+            position: relative;
+            animation: fadeIn 1s ease-out both;
+        }
+
+        .flow-step:nth-child(1) { animation-delay: 0.2s; }
+        .flow-step:nth-child(2) { animation-delay: 0.4s; }
+        .flow-step:nth-child(3) { animation-delay: 0.6s; }
+        .flow-step:nth-child(4) { animation-delay: 0.8s; }
+
+        .step-number {
+            background: linear-gradient(135deg, var(--primary), var(--accent));
+            color: white;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 1.2rem;
+            margin: -40px auto 15px auto;
+            box-shadow: 0 0 15px var(--primary-glow);
+        }
+
+        .flow-step h3 {
+            color: #60a5fa;
+            margin-bottom: 10px;
+        }
+
+        .flow-step p {
+            font-size: 0.95rem;
+            color: var(--text-muted);
+            line-height: 1.5;
+        }
+
+        /* Code/Schema preview */
+        pre {
+            background: #0f172a;
+            padding: 15px;
+            border-radius: 8px;
+            color: #34d399;
+            overflow-x: auto;
+            font-size: 0.9rem;
+            border: 1px solid rgba(255,255,255,0.05);
+        }
+
+        /* Animations */
+        @keyframes fadeInDown {
+            from { opacity: 0; transform: translateY(-20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: scale(0.95); }
+            to { opacity: 1; transform: scale(1); }
+        }
+
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <header>
+            <h1>Sonata Satark ML Architecture</h1>
+            <p class="subtitle">End-to-End Pipeline for the Random Forest Pre-Audit Risk Score Predictor</p>
+        </header>
+
+        <div class="card">
+            <h2>The Data Flow Architecture</h2>
+            <p>This pipeline automates the extraction of historical branch data, trains a Random Forest Regressor, and serves predicted risk scores directly back to the Audit Planner module.</p>
+            
+            <div class="pipeline-flow">
+                <div class="flow-step">
+                    <div class="step-number">1</div>
+                    <h3>SQL Feature Extraction</h3>
+                    <p>The stored procedure (`SP_BranchRiskScore`) runs daily/monthly, compressing 2.8 million customers into aggregate Branch-level rows.</p>
+                </div>
+                <div class="flow-step">
+                    <div class="step-number">2</div>
+                    <h3>Database Staging</h3>
+                    <p>Data is saved into `TBL_ML_TrainingData` (for 10+ months history) and `TBL_ML_CurrentMonth_Features` (for today's live predictions).</p>
+                </div>
+                <div class="flow-step">
+                    <div class="step-number">3</div>
+                    <h3>Python XGBoost Inference</h3>
+                    <p>A Python script loads the Current Month features, feeds them into the trained `model.pkl`, and predicts the raw Risk Score.</p>
+                </div>
+                <div class="flow-step">
+                    <div class="step-number">4</div>
+                    <h3>Planner Consumption</h3>
+                    <p>Python writes results to `TBL_ML_PredictedValues`. The frontend Audit Planner reads this table to assign Critical/High/Low grades automatically.</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Database Schema Overview</h2>
+            <p>The architecture relies on 4 strictly defined tables, available in the `schema.sql` file in this directory.</p>
+            
+            <h3>1. The Training Vault</h3>
+            <pre>Table: TBL_ML_TrainingData
+Purpose: Stores 10 to 24 months of branch snapshots (approx. 30k-60k rows).
+Key Columns: SnapshotDate, BranchID, Historical_Risk_Score (Y), TotalLoans (X1), NPALoans (X2)...</pre>
+
+            <h3>2. The Live Feature Store</h3>
+            <pre>Table: TBL_ML_CurrentMonth_Features
+Purpose: Stores the exact same X features, but only for the CURRENT snapshot date.
+Trigger: Populated via SQL Agent Job before Python prediction script runs.</pre>
+
+            <h3>3. The Prediction Output</h3>
+            <pre>Table: TBL_ML_PredictedValues
+Purpose: The single source of truth for the Audit Planner UI.
+Key Columns: BranchID, Predicted_Risk_Score (e.g. 450), Predicted_Risk_Grade ('HIGH')</pre>
+
+            <h3>4. The Audit Trail</h3>
+            <pre>Table: TBL_ML_PredictedValues_History
+Purpose: Tracks every prediction made by the model. Crucial for measuring "Model Drift" over time.</pre>
+        </div>
+
+        <div class="card">
+            <h2>The Modeling Choice: Random Forest Regressor</h2>
+            <p style="color: var(--text-muted); line-height: 1.6;">
+                Given the dataset size (~4,700 rows), the <b>Random Forest Regressor</b> is the optimal choice. Tree-based ensemble models natively handle unscaled tabular data, missing values, and non-linear relationships. By utilizing "Bagging" (Bootstrap Aggregating), Random Forests build hundreds of independent decision trees on random subsets of data, making them incredibly resistant to overfitting on smaller datasets compared to boosting algorithms. Explainability is fully maintained via feature importance and SHAP values, ensuring transparency for the auditing board.
+            </p>
+        </div>
+    </div>
+
+</body>
+</html>

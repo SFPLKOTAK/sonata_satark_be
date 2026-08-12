@@ -635,17 +635,27 @@ class GetCenterAuditFeedbackQueryHandler(QueryHandler):
                 SELECT 
                     f.audit_id, f.center_checklist_id, f.answer, f.normal_remark, f.status,
                     r.confidential_remark,
-                    fl.id as confidential_file_id, fl.file_name as confidential_file_name,
-                    nf.id as normal_file_id, nf.file_name as normal_file_name,
-                    ev.id as evidence_file_id, ev.file_name as evidence_file_name,
-                    ev.latitude as evidence_latitude, ev.longitude as evidence_longitude,
-                    ev.image_text as evidence_text,
+                    (
+                        SELECT fl.id as id, fl.file_name as filename
+                        FROM dbo.audit_center_confidential_files fl 
+                        WHERE f.center_id = fl.center_id AND f.center_checklist_id = fl.center_checklist_id AND fl.is_archived = 0
+                        FOR JSON PATH
+                    ) as confidential_files_json,
+                    (
+                        SELECT nf.id as id, nf.file_name as filename
+                        FROM dbo.audit_center_normal_files nf 
+                        WHERE f.center_id = nf.center_id AND f.center_checklist_id = nf.center_checklist_id AND nf.is_archived = 0
+                        FOR JSON PATH
+                    ) as normal_files_json,
+                    (
+                        SELECT ev.id as id, ev.file_name as filename, ev.latitude as latitude, ev.longitude as longitude, ev.image_text as imageText
+                        FROM dbo.audit_center_evidence ev 
+                        WHERE f.center_id = ev.center_id AND f.center_checklist_id = ev.center_checklist_id AND ev.is_archived = 0
+                        FOR JSON PATH
+                    ) as evidence_files_json,
                     f.branchid
                 FROM dbo.audit_center_checklist_feedback f
                 LEFT JOIN dbo.audit_center_confidential_remarks r ON f.center_id = r.center_id AND f.center_checklist_id = r.center_checklist_id
-                LEFT JOIN dbo.audit_center_confidential_files fl ON f.center_id = fl.center_id AND f.center_checklist_id = fl.center_checklist_id AND fl.is_archived = 0
-                LEFT JOIN dbo.audit_center_normal_files nf ON f.center_id = nf.center_id AND f.center_checklist_id = nf.center_checklist_id AND nf.is_archived = 0
-                LEFT JOIN dbo.audit_center_evidence ev ON f.center_id = ev.center_id AND f.center_checklist_id = ev.center_checklist_id AND ev.is_archived = 0
                 WHERE f.center_id = %s
             """
             params = [center_id]
@@ -660,22 +670,23 @@ class GetCenterAuditFeedbackQueryHandler(QueryHandler):
 
             feedback_list = []
             feedback_audit_id = audit_id
+            
+            import json
             for row in rows:
                 row_dict = dict(zip(columns, row))
                 if row_dict.get("audit_id") and not feedback_audit_id:
                     feedback_audit_id = row_dict.get("audit_id")
                 
-                normal_file_id = row_dict.get("normal_file_id")
-                confidential_file_id = row_dict.get("confidential_file_id")
-                evidence_file_id = row_dict.get("evidence_file_id")
+                normal_files = json.loads(row_dict.get("normal_files_json") or "[]")
+                confidential_files = json.loads(row_dict.get("confidential_files_json") or "[]")
+                evidence_images = json.loads(row_dict.get("evidence_files_json") or "[]")
 
-                # Convert decimals to float safely
-                evidence_latitude = row_dict.get("evidence_latitude")
-                if isinstance(evidence_latitude, decimal.Decimal):
-                    evidence_latitude = float(evidence_latitude)
-                evidence_longitude = row_dict.get("evidence_longitude")
-                if isinstance(evidence_longitude, decimal.Decimal):
-                    evidence_longitude = float(evidence_longitude)
+                # Convert decimals to float safely for evidence images
+                for ev in evidence_images:
+                    if 'latitude' in ev and ev['latitude'] is not None:
+                        ev['latitude'] = float(ev['latitude'])
+                    if 'longitude' in ev and ev['longitude'] is not None:
+                        ev['longitude'] = float(ev['longitude'])
 
                 feedback_list.append({
                     "checklistId": row_dict.get("center_checklist_id"),
@@ -684,21 +695,9 @@ class GetCenterAuditFeedbackQueryHandler(QueryHandler):
                     "status": row_dict.get("status"),
                     "confidentialRemark": row_dict.get("confidential_remark"),
                     "branchId": row_dict.get("branchid"),
-                    "normalFile": {
-                        "id": normal_file_id,
-                        "filename": row_dict.get("normal_file_name")
-                    } if normal_file_id else None,
-                    "confidentialFile": {
-                        "id": confidential_file_id,
-                        "filename": row_dict.get("confidential_file_name")
-                    } if confidential_file_id else None,
-                    "evidenceImage": {
-                        "id": evidence_file_id,
-                        "filename": row_dict.get("evidence_file_name"),
-                        "latitude": evidence_latitude,
-                        "longitude": evidence_longitude,
-                        "imageText": row_dict.get("evidence_text")
-                    } if evidence_file_id else None,
+                    "normalFiles": normal_files,
+                    "confidentialFiles": confidential_files,
+                    "evidenceImages": evidence_images,
                 })
 
             return {
@@ -713,25 +712,52 @@ class GetCenterAuditFeedbackQueryHandler(QueryHandler):
 
 
 class ViewCenterFeedbackFileQuery(Query):
-    def __init__(self, file_id):
+    def __init__(self, file_id, file_type):
         self.file_id = file_id
+        self.file_type = file_type
 
 
 class ViewCenterFeedbackFileQueryHandler(QueryHandler):
     def execute(self, query: ViewCenterFeedbackFileQuery) -> dict:
+        table_map = {
+            'normal': 'dbo.audit_center_normal_files',
+            'confidential': 'dbo.audit_center_confidential_files',
+            'evidence': 'dbo.audit_center_evidence'
+        }
+        
+        if query.file_type not in table_map:
+            return {'success': False, 'message': 'Invalid file type', 'status_code': 400}
+            
+        table_name = table_map[query.file_type]
+        
         try:
             with connection.cursor() as cursor:
-                cursor.execute("SELECT file_name, file_payload FROM dbo.audit_center_checklist_feedback_files WHERE file_id = %s", [query.file_id])
+                if query.file_type == 'evidence':
+                    cursor.execute(f"SELECT file_name, file_content FROM {table_name} WHERE id = %s", [query.file_id])
+                else:
+                    cursor.execute(f"SELECT file_name, file_content FROM {table_name} WHERE id = %s", [query.file_id])
+                    
                 row = cursor.fetchone()
 
             if not row:
                 return {'success': False, 'message': 'File not found', 'status_code': 404}
 
             filename, payload = row
-            if payload:
-                payload = decompress_file_backend(payload, filename)
+            if not payload:
+                return {'success': False, 'message': 'File content is empty', 'status_code': 404}
 
-            return {'success': True, 'filename': filename, 'payload': payload, 'status_code': 200}
+            file_bytes = decompress_file_backend(bytes(payload), filename)
+
+            import mimetypes
+            import base64
+            mime_type, _ = mimetypes.guess_type(filename or '')
+            if not mime_type:
+                mime_type = 'application/octet-stream'
+
+            b64 = base64.b64encode(file_bytes).decode('utf-8')
+            data_url = f"data:{mime_type};base64,{b64}"
+
+            return {'success': True, 'filename': filename, 'dataUrl': data_url, 'status_code': 200}
         except Exception as e:
             log_error(f"ViewCenterFeedbackFileQueryHandler failed: {str(e)}")
             raise e

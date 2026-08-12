@@ -557,11 +557,14 @@ def view_center_feedback_file(request):
     if error_resp: return error_resp
 
     file_id = data.get('file_id')
+    file_type = data.get('file_type')
     if not file_id:
         return JsonResponse({'success': False, 'message': 'file_id is required'}, status=400)
+    if not file_type:
+        return JsonResponse({'success': False, 'message': 'file_type is required'}, status=400)
 
     try:
-        query = ViewCenterFeedbackFileQuery(file_id=file_id)
+        query = ViewCenterFeedbackFileQuery(file_id=file_id, file_type=file_type)
         result = dispatcher.query(query)
         status = result.pop('status_code', 200)
         return JsonResponse(result, status=status)
@@ -577,11 +580,14 @@ def archive_center_feedback_file(request):
     if error_resp: return error_resp
 
     file_id = data.get('file_id')
+    file_type = data.get('file_type')
     if not file_id:
         return JsonResponse({'success': False, 'message': 'file_id is required'}, status=400)
+    if not file_type:
+        return JsonResponse({'success': False, 'message': 'file_type is required'}, status=400)
 
     try:
-        command = ArchiveCenterFeedbackFileCommand(file_id=file_id)
+        command = ArchiveCenterFeedbackFileCommand(file_id=file_id, file_type=file_type)
         result = dispatcher.send(command)
         status = result.pop('status_code', 200)
         return JsonResponse(result, status=status)

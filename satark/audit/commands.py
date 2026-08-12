@@ -826,11 +826,6 @@ class SaveCenterAuditFeedbackCommandHandler(CommandHandler):
                         new_normal_file_id = None
                         if has_new_normal_file:
                             cursor.execute("""
-                                UPDATE dbo.audit_center_normal_files
-                                SET is_archived = 1, updated_at = GETDATE()
-                                WHERE center_id = %s AND center_checklist_id = %s AND is_archived = 0
-                            """, [center_id, checklist_id])
-                            cursor.execute("""
                                 INSERT INTO dbo.audit_center_normal_files (
                                     feedback_id, center_id, center_checklist_id, file_name, file_content, is_archived, uploaded_by, created_at, updated_at
                                 ) VALUES (%s, %s, %s, %s, %s, 0, %s, GETDATE(), GETDATE())
@@ -864,11 +859,6 @@ class SaveCenterAuditFeedbackCommandHandler(CommandHandler):
                         new_confidential_file_id = None
                         if has_new_confidential_file:
                             cursor.execute("""
-                                UPDATE dbo.audit_center_confidential_files
-                                SET is_archived = 1, updated_at = GETDATE()
-                                WHERE center_id = %s AND center_checklist_id = %s AND is_archived = 0
-                            """, [center_id, checklist_id])
-                            cursor.execute("""
                                 INSERT INTO dbo.audit_center_confidential_files (
                                     feedback_id, center_id, center_checklist_id, confidential_file_path, file_name, file_content, is_archived, user_id, created_at, updated_at
                                 ) VALUES (%s, %s, %s, NULL, %s, %s, 0, %s, GETDATE(), GETDATE())
@@ -879,11 +869,6 @@ class SaveCenterAuditFeedbackCommandHandler(CommandHandler):
                         # Store evidence captured image in database
                         new_evidence_file_id = None
                         if has_new_evidence_image:
-                            cursor.execute("""
-                                UPDATE dbo.audit_center_evidence
-                                SET is_archived = 1, updated_at = GETDATE()
-                                WHERE center_id = %s AND center_checklist_id = %s AND is_archived = 0
-                            """, [center_id, checklist_id])
                             cursor.execute("""
                                 INSERT INTO dbo.audit_center_evidence (
                                     feedback_id, center_id, center_checklist_id, file_name, file_content,
@@ -933,28 +918,32 @@ class SaveCenterAuditFeedbackCommandHandler(CommandHandler):
 
 
 class ArchiveCenterFeedbackFileCommand(Command):
-    def __init__(self, file_id: int):
+    def __init__(self, file_id: int, file_type: str):
         self.file_id = file_id
+        self.file_type = file_type
 
 
 class ArchiveCenterFeedbackFileCommandHandler(CommandHandler):
     def execute(self, command: ArchiveCenterFeedbackFileCommand) -> dict:
         file_id = command.file_id
+        file_type = command.file_type
+        
+        table_map = {
+            'normal': 'dbo.audit_center_normal_files',
+            'confidential': 'dbo.audit_center_confidential_files',
+            'evidence': 'dbo.audit_center_evidence'
+        }
+        
+        if file_type not in table_map:
+            return {'success': False, 'message': 'Invalid file type', 'status_code': 400}
+            
+        table_name = table_map[file_type]
+
         try:
             with transaction.atomic():
                 with connection.cursor() as cursor:
-                    cursor.execute("SELECT file_name, file_payload FROM dbo.audit_center_checklist_feedback_files WHERE file_id = %s", [file_id])
-                    row = cursor.fetchone()
-                    if not row:
-                        return {'success': False, 'message': 'File not found', 'status_code': 404}
-                    
-                    fname, payload = row
-                    cursor.execute("""
-                        INSERT INTO dbo.archive_audit_center_checklist_feedback_files (file_id, file_name, file_payload)
-                        VALUES (%s, %s, %s)
-                    """, [file_id, fname, payload])
-                    cursor.execute("DELETE FROM dbo.audit_center_checklist_feedback_files WHERE file_id = %s", [file_id])
-                    cursor.execute("UPDATE dbo.audit_center_checklist_feedback SET file_id = NULL, file_name = NULL WHERE file_id = %s", [file_id])
+                    # Archive by setting is_archived = 1
+                    cursor.execute(f"UPDATE {table_name} SET is_archived = 1, updated_at = GETDATE() WHERE id = %s", [file_id])
 
             return {'success': True, 'message': 'File archived successfully'}
         except Exception as e:
