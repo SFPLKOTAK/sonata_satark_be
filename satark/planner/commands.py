@@ -23,11 +23,12 @@ except ImportError:
 
 class GenerateAuditPlanCommand(Command):
     """Command representing intent to generate and save a new audit plan"""
-    def __init__(self, as_on_date: str, division: str = None, plan_month: str = None, auditors: list = None):
+    def __init__(self, as_on_date: str, division: str = None, plan_month: str = None, auditors: list = None, divisionid: int=0):
         self.as_on_date = as_on_date
         self.division = division
         self.plan_month = plan_month
         self.auditors = auditors
+        self.divisionid = divisionid
 
 
 class GenerateAuditPlanCommandHandler(CommandHandler):
@@ -37,6 +38,7 @@ class GenerateAuditPlanCommandHandler(CommandHandler):
         division = command.division
         plan_month = command.plan_month
         auditors = command.auditors
+        divisionid = command.divisionid
 
         # 1. Fetch auditors from DB if not supplied
         auditors_db_source = "RequestPayload"
@@ -48,7 +50,7 @@ class GenerateAuditPlanCommandHandler(CommandHandler):
                 cursor.execute(
                     "SELECT UserID, UserName "
                     "FROM accounts_mst_usertbl "
-                    "WHERE Buid = 2158 AND DesignationID = 4"
+                    "WHERE Buid = %s AND DesignationID = 4", [divisionid]
                 )
                 if not cursor.description:
                     raise RuntimeError("accounts_mst_usertbl query returned no columns.")
@@ -68,6 +70,7 @@ class GenerateAuditPlanCommandHandler(CommandHandler):
                 for row in rows
             ]
             auditors_db_source = "Database"
+            print(auditors, "auditors .........................")
 
         # 2. Fetch branch risk scores from DB
         if connection.vendor == "sqlite":
@@ -75,14 +78,21 @@ class GenerateAuditPlanCommandHandler(CommandHandler):
 
         branches = []
         db_source = "branchRiskScoreTable"
+        print(as_on_date, "as_on_date")
+        print(division, "division")
+        print(plan_month, "plan_month")
+        print(divisionid, "divisionid")
+
+        as_on_date = '2026-06-30'
+        plan_month ='2026-07'
 
         with connection.cursor() as cursor:
             # Try exact date first
             cursor.execute(
                 "SELECT DIVISION, BRANCHID, BranchName, RiskScore "
                 "FROM branchRiskScore "
-                "WHERE AsOnDate = %s",
-                [as_on_date],
+                "WHERE AsOnDate = %s and division=%s",
+                [as_on_date, division],
             )
             columns = [col[0] for col in cursor.description] if cursor.description else []
             rows = cursor.fetchall()
@@ -92,12 +102,13 @@ class GenerateAuditPlanCommandHandler(CommandHandler):
                 cursor.execute(
                     "SELECT DIVISION, BRANCHID, BranchName, RiskScore "
                     "FROM branchRiskScore "
-                    "WHERE AsOnDate = (SELECT MAX(AsOnDate) FROM branchRiskScore)"
+                    "WHERE AsOnDate = (SELECT MAX(AsOnDate) FROM branchRiskScore) and division=%s",[division]
                 )
                 columns = [col[0] for col in cursor.description] if cursor.description else []
                 rows = cursor.fetchall()
                 if rows:
                     db_source = "branchRiskScoreTable (latest available date — requested date had no data)"
+            print(rows, "rows")
 
         if not rows:
             raise ValueError("No branch data found in branchRiskScore table.")
@@ -113,6 +124,7 @@ class GenerateAuditPlanCommandHandler(CommandHandler):
                 "branch_name": str(branch_name) if branch_name is not None else "",
                 "risk_score": int(risk_score) if risk_score is not None else 0
             })
+        print(branches, "branches....................")
 
         # 3. Generate plan
         planner = AuditPlanner()
@@ -129,7 +141,7 @@ class GenerateAuditPlanCommandHandler(CommandHandler):
             try:
                 with transaction.atomic():
                     # Clear current active plans in audit_plan_current
-                    AuditPlanCurrent.objects.all().delete()
+                    # AuditPlanCurrent.objects.all().delete()
 
                     current_objects = []
                     history_objects = []
@@ -191,4 +203,4 @@ class GenerateAuditPlanCommandHandler(CommandHandler):
             "auditors_count": len(auditors),
         }
 
-        return result
+        return 0
