@@ -1125,6 +1125,19 @@ class SubmitForReviewCommandHandler(CommandHandler):
                         if plan:
                             branch_id = plan.branch_id
 
+                    # 1.b Resolve Division_id from branch    
+                    division_id = None
+                    if branch_id : 
+                        try:
+                            cursor.execute("""
+                                select DivisionID from VW_Branch_To_GeographicalHierarchy where BranchID = %s
+                            """, [branch_id])
+                            rev_row = cursor.fetchone()
+                            if rev_row:
+                                division_id    = rev_row[0] 
+                        except Exception:
+                            division_id  = None
+
                     # 2. Resolve reviewer_id for this auditor/branch
                     reviewer_id = None
                     if branch_id:
@@ -1133,7 +1146,7 @@ class SubmitForReviewCommandHandler(CommandHandler):
                                 SELECT TOP 1 division_head_userid, zonal_userid
                                 FROM dbo.VW_Branch_To_GeographicalHierarchy_head_audit
                                 WHERE division_buid = %s OR fa_buid = %s
-                            """, [branch_id, branch_id])
+                            """, [division_id, division_id])
                             rev_row = cursor.fetchone()
                             if rev_row:
                                 reviewer_id = rev_row[0] or rev_row[1]
