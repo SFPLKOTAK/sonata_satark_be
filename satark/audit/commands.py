@@ -1139,6 +1139,7 @@ class SubmitForReviewCommandHandler(CommandHandler):
                             division_id  = None
 
                     # 2. Resolve reviewer_id for this auditor/branch
+                    print(division_id, "division id")
                     reviewer_id = None
                     if branch_id:
                         try:
@@ -1153,6 +1154,8 @@ class SubmitForReviewCommandHandler(CommandHandler):
                         except Exception:
                             reviewer_id = None
 
+                    print(reviewer_id, "reviewer id")
+
                     # 3. Create review cycle entry in dbo.audit_branch_review_cycle
                     next_cycle_no = (current_cycle_no or 0) + 1
 
@@ -1165,6 +1168,7 @@ class SubmitForReviewCommandHandler(CommandHandler):
 
                     # 4. Update audit_branch_progress
                     if p_row:
+                        print("testing the audit branch progress")
                         cursor.execute("""
                             UPDATE dbo.audit_branch_progress
                             SET audit_status = 'in-review',
