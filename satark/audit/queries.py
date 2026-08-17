@@ -117,7 +117,7 @@ class GetCenterChecklistPointsQueryHandler(QueryHandler):
                 cursor.execute("""
                     SELECT 
                         center_checklist_id, serial_no, parameter_code, 
-                        parameter_name, max_score, is_active, created_at, updated_at
+                        parameter_name, case when max_score = 6 then 'Critical' when max_score=4 then 'Important' else 'Ideal' end as category, max_score, is_active, created_at, updated_at
                     FROM [dbo].[audit_center_checklist_master]
                     ORDER BY serial_no ASC
                 """)
@@ -633,7 +633,7 @@ class GetCenterAuditFeedbackQueryHandler(QueryHandler):
 
             query_sql = """
                 SELECT 
-                    f.audit_id, f.center_checklist_id, f.answer, f.normal_remark, f.status,
+                    f.audit_id, f.center_checklist_id, f.answer, f.normal_remark, f.status, case when accm.max_score = 6 then 'Critical' when accm.max_score= 4 then 'Important' else 'Ideal' end as Category,
                     r.confidential_remark,
                     (
                         SELECT fl.id as id, fl.file_name as filename
@@ -656,6 +656,7 @@ class GetCenterAuditFeedbackQueryHandler(QueryHandler):
                     f.branchid
                 FROM dbo.audit_center_checklist_feedback f
                 LEFT JOIN dbo.audit_center_confidential_remarks r ON f.center_id = r.center_id AND f.center_checklist_id = r.center_checklist_id
+                join audit_center_checklist_master accm on f.center_checklist_id = accm.center_checklist_id
                 WHERE f.center_id = %s
             """
             params = [center_id]
@@ -698,6 +699,7 @@ class GetCenterAuditFeedbackQueryHandler(QueryHandler):
                     "normalFiles": normal_files,
                     "confidentialFiles": confidential_files,
                     "evidenceImages": evidence_images,
+                    "category": row_dict.get("Category")
                 })
 
             return {
