@@ -252,7 +252,7 @@ class GetAuditFeedbackQueryHandler(QueryHandler):
         try:
             int(branch_id)
         except ValueError:
-            plan_obj = AuditPlanCurrent.objects.filter(branch=branch_id).first()
+            plan_obj = AuditPlanCurrent.objects.filter(branch=branch_id).order_by('-id').first()
             if plan_obj and plan_obj.branch_id:
                 branch_id = str(plan_obj.branch_id)
 
