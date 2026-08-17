@@ -1169,7 +1169,8 @@ class SubmitForReviewCommandHandler(CommandHandler):
                             UPDATE dbo.audit_branch_progress
                             SET audit_status = 'in-review',
                                 audit_pending_with = %s,
-                                current_cycle_no = %s
+                                current_cycle_no = %s,
+                                audit_end_date = GETDATE()
                             WHERE audit_id = %s
                         """, [reviewer_id, next_cycle_no, audit_id])
                     else:
@@ -1180,14 +1181,39 @@ class SubmitForReviewCommandHandler(CommandHandler):
                             ) VALUES (%s, %s, %s, 'in-review', %s, %s)
                         """, [audit_id, branch_id, user.UserID, reviewer_id, next_cycle_no])
 
-                    # 5. Log activity in dbo.audit_activity_log
+                    # 5. Score calculation (same as EndBranchAudit flow)
+                    score_error = None
+                    try:
+                        cursor.execute("""
+                            SELECT MAX(audit_end_date) FROM dbo.audit_branch_progress
+                            WHERE audit_id = %s
+                        """, [audit_id])
+                        score_row = cursor.fetchone()
+                        as_on_date = score_row[0] if score_row and score_row[0] else None
+
+                        cursor.execute("EXEC dbo.usp_PopulateAuditChecklistScores @AsOnDate = %s", [as_on_date])
+
+                        # Auto-generate Compliance Tickets for non-compliant points
+                        cursor.execute("EXEC dbo.usp_GenerateComplianceTickets @AuditID = %s", [audit_id])
+                    except Exception as sp_err:
+                        log_error(f"SubmitForReview: score calculation SP failed: {str(sp_err)}")
+                        score_error = str(sp_err)
+
+                    # 6. Log activity in dbo.audit_activity_log
                     cursor.execute("""
                         INSERT INTO dbo.audit_activity_log (
                             branch_id, action, status_to, created_by, created_at, remarks
                         ) VALUES (%s, 'SUBMITTED', 'in-review', %s, GETDATE(), 'Audit submitted for review')
                     """, [branch_id, user.UserID])
 
-            return {'success': True, 'message': 'Audit review submitted successfully'}
+            if score_error:
+                return {
+                    'success': True,
+                    'message': 'Audit review submitted successfully, but score calculation had an error.',
+                    'score_error': score_error
+                }
+
+            return {'success': True, 'message': 'Audit review submitted successfully. Scores have been calculated.'}
         except Exception as e:
             log_error(f"SubmitForReviewCommandHandler failed: {str(e)}")
             raise e
