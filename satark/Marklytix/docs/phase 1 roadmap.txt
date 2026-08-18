@@ -1,0 +1,107 @@
+Phase 1 — Database Auto-Scanner & Schema Intelligence
+Goal: Build the engine that can scan ANY SQL Server (or later any DB) and auto-generate all categories, subcategories, keywords, and ChromaDB vectors — replacing manual data entry forever.
+DB Scanner Core Engine
+New File: sarthi_chatbot/db_scanner/scanner.py
+This is the heart of the product. The scanner must:
+•Connect to any database using user-provided credentials (server, db, user, password, driver)
+•Enumerate all schemas/tables (INFORMATION_SCHEMA.TABLES, INFORMATION_SCHEMA.COLUMNS)
+•Read sample data (TOP 5 rows) per table for context
+•Extract semantic metadata per table: table name → inferred domain, column names + data types, foreign key relationships, approximate row count, index information
+Implementation — DatabaseSchemaScanner
+class DatabaseSchemaScanner:
+    """Scans any SQL Server database and extracts semantic metadata.
+    Designed to be run as a background Celery task (not blocking).
+    """
+ 
+    def __init__(self, tenant_id: str, connection_config: dict):
+        self.tenant_id = tenant_id
+        self.config = connection_config
+        self.engine = self._create_engine()
+ 
+    def _create_engine(self):
+        """Create SQLAlchemy engine from tenant config."""
+        ...
+ 
+    def get_all_tables(self) -> list[dict]:
+        """Returns {table_name, schema, row_count, columns: [{name, type, is_nullable, is_fk}]}"""
+        ...
+ 
+    def get_table_sample(self, table_name: str, n=5) -> list[dict]:
+        """Returns TOP N rows as list of dicts for LLM context."""
+        ...
+ 
+    def get_foreign_keys(self) -> list[dict]:
+        """Returns all FK relationships to help identify join patterns."""
+        ...
+ 
+    def scan_all(self, progress_callback=None) -> dict:
+        """Full scan: tables → columns → samples → FK map.
+        Calls progress_callback(table_name, idx, total) as it progresses.
+        Designed to be called inside a Celery task."""
+        ...
+
+
+
+Database Model — Chatbot_Sa_TenantScanJobs
+CREATE TABLE Chatbot_Sa_TenantScanJobs (
+    JobId         UNIQUEIDENTIFIER DEFAULT NEWID() PRIMARY KEY,
+    TenantId      VARCHAR(100) NOT NULL,
+    Status        VARCHAR(20) DEFAULT 'PENDING',  -- PENDING/RUNNING/DONE/FAILED
+    TotalTables   INT,
+    ScannedTables INT DEFAULT 0,
+    StartedAt     DATETIME,
+    CompletedAt   DATETIME,
+    ErrorMessage  NVARCHAR(MAX)
+)
+LLM-Powered Category & Subcategory Generator
+New File: sarthi_chatbot/db_scanner/category_generator.py
+After scanning all tables, use an LLM to group them into categories and subcategories intelligently.
+Strategy
+•Send batches of 10-15 table names + columns + sample data to LLM
+•LLM returns: category, subcategory, keywords, description
+•Merge/deduplicate across batches
+•Store in Chatbot_Sa_Categories and Chatbot_Sa_Subcategories tables
+LLM Prompt for Classification
+You are a database domain expert. Group these SQL Server tables into
+logical business categories and subcategories.
+ 
+Rules:
+- Identify 3-8 top-level CATEGORIES (e.g., Collections, Hierarchy, Staff Management)
+- Within each category, create 2-5 SUBCATEGORIES (more specific groupings)
+- For each subcategory, provide 15-20 keywords a user might say
+- For each subcategory, identify which tables belong to it
+ 
+Return JSON: { categories: [ { name, description, keywords,
+  subcategories: [ { name, description, keywords, tables } ] } ] }
+Tasks
+☐Implement CategoryGenerator.generate_from_scan(scan_result)
+☐Implement batch processing (handle 100+ tables by chunking)
+☐Write results to Chatbot_Sa_Categories, Chatbot_Sa_Subcategories
+☐Generate default keywords per subcategory using LLM
+Specialized Prompt Auto-Generator
+New File: sarthi_chatbot/db_scanner/prompt_generator.py
+For each subcategory identified, auto-generate:
+•A system prompt for the query LLM (with table schemas, business context)
+•3-5 example SQL query pairs (NL question → SQL) to seed the few-shot store
+•Business rules extracted from column names (e.g., DPD → "Days Past Due")
+PromptGenerator class responsibilities
+•generate_subcategory_prompt(subcategory, tables, schema_info, sample_data) → complete T-SQL generator system prompt
+•generate_sql_examples(subcategory, tables, schema_info) → list of {question, sql} pairs to seed sarthi_sql_examples
+•extract_business_glossary(columns) → expands abbreviations (DPD → Days Past Due, NPA → Non Performing Asset, etc.)
+Output → writes to Chatbot_Sa_SubcategoryPrompts table automatically.
+ ChromaDB Auto-Seeder & Background Task Wiring
+Tasks
+☐Modify sync_chroma_db_from_database() to also populate sarthi_sql_examples collection
+☐Create Celery task tasks.py → scan_and_index_tenant_database(tenant_id)
+☐Wire the entire scan → categorize → prompt-generate → chroma-sync pipeline
+☐Add progress WebSocket events so the admin panel can track scan progress in real time
+☐Create Django management command: python manage.py scan_database --tenant_id=<id>
+☐Add rate-limiting: scan tables at 2-3 per second to avoid overwhelming the source DB
+Celery Task Pipeline
+[Task 1] scan_database_schema(tenant_id)
+    → [Task 2] generate_categories_llm(tenant_id, scan_result)
+        → [Task 3] generate_prompts_per_subcategory(tenant_id, categories)
+            → [Task 4] seed_chroma_vectors(tenant_id, prompts, sql_examples)
+                → [Notify] WebSocket progress event to admin
+PHASE 1 DELIVERABLE
+Drop any SQL Server credentials in, hit "Scan", go to sleep. Wake up and the chatbot is ready.

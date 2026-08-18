@@ -1,0 +1,97 @@
+Here's the build order — sequenced so every step gives you something *working* before you add the next layer of complexity. Don't build all the fancy stuff first; each stage should be provably working before you move on.
+
+---
+
+## Step 1 — Get ONE table working end-to-end, no parallelism at all
+
+**Build:** A single Python function that connects to the DB, scans one table's columns, pulls 5 sample rows, sends it to the LLM, gets back a category, and writes it to your SQL tables.
+
+**Why first:** Before anything about scale or Celery matters, you need to prove the *core logic* works — can you actually connect, actually extract useful schema info, actually get a sensible category back from the LLM. If this doesn't work for one table, parallelizing it just means you have 600 broken things instead of 1.
+
+**Done when:** You can run one script, point it at one table, and see a correct category/subcategory written to your DB.
+
+---
+
+## Step 2 — Make it work for ALL tables, still sequential (one at a time)
+
+**Build:** A loop that runs Step 1's logic across every table in the database, one after another, no Celery yet.
+
+**Why:** This proves your scanning + categorization logic holds up across variety — weird table names, tables with no data, tables with hundreds of columns. You'll find edge cases here (empty tables, tables with no foreign keys, columns with odd types) that are much easier to debug one-at-a-time than while also debugging parallel workers.
+
+**Done when:** You can scan a real 600-table database front to back, even if it takes an hour, and get a full — if messy — set of categories out the other end.
+
+---
+
+## Step 3 — Add the Reconciliation step
+
+**Build:** After Step 2 finishes, run the embedding + clustering logic to merge near-duplicate categories ("Collections" vs "Loan Collections") into one clean list.
+
+**Why now, not later:** Do this while you're still single-threaded and can easily inspect the messy output from Step 2 by hand. You want to *see* the duplicate-category problem with your own eyes and confirm your reconciliation logic actually fixes it, before you add the complexity of parallel execution on top.
+
+**Done when:** Running Step 2 + Step 3 together gives you a clean, deduplicated category list you'd be comfortable showing a user.
+
+---
+
+## Step 4 — Wrap each unit of work as a Celery task
+
+**Build:** Take the functions from Steps 1-3 and turn them into `@shared_task` functions (`scan_table`, `enrich_table`, `categorize_batch`, `reconcile_categories`), each queued with `.delay()` instead of called directly.
+
+**Why now:** You already know the logic works correctly (Steps 1-3 proved that). Now you're purely solving a *speed* problem, not a *correctness* problem — much easier to debug Celery issues when you're not simultaneously debugging your categorization logic.
+
+**Done when:** The exact same result as Step 3, but now running through Celery with `.delay()` calls, using just 1 worker (concurrency=1) so it's still effectively sequential — just proving the plumbing works.
+
+---
+
+## Step 5 — Turn on real parallelism
+
+**Build:** Bump worker concurrency up (e.g. `--concurrency=10`), split into separate queues per stage (discovery/enrichment/categorize), and use a `chord` to trigger reconciliation only after all categorize_batch tasks finish.
+
+**Why now:** This is where your 50-90 minute sequential scan becomes a 10-15 minute parallel one. You do this *after* correctness is proven, because now if something breaks, you know it's a concurrency bug, not a logic bug — much narrower thing to debug.
+
+**Done when:** A full 600-table scan finishes in minutes, not an hour, and the final categories are just as clean as the sequential version.
+
+---
+
+## Step 6 — Add backpressure limits
+
+**Build:** Cap concurrent DB connections during scanning (Celery `rate_limit` or a semaphore), cap concurrent LLM calls in the categorize queue.
+
+**Why now, not earlier:** You can only tell if you *need* these limits once you're actually running things in parallel at Step 5. Add them once you see real symptoms — DB connection errors, LLM rate-limit errors — rather than guessing numbers upfront.
+
+**Done when:** You can run a full scan without ever getting a DB connection error or an LLM 429 rate-limit error.
+
+---
+
+## Step 7 — Add checkpointing (per-table, per-stage status tracking)
+
+**Build:** The `Chatbot_Sa_TenantScanJobs` table tracking status per table per stage, plus a `resume_scan()` function that only re-queues incomplete work.
+
+**Why this late, not earlier:** You genuinely don't need this until your scans are long enough that a crash mid-scan actually hurts (once you're at Step 5's speed, a scan might be 10-15 min — still annoying to lose, worth protecting now). Building it earlier, while your pipeline logic is still changing, means rebuilding it repeatedly for no reason.
+
+**Done when:** You can kill your Celery workers mid-scan, restart them, and the scan picks up roughly where it left off instead of restarting from zero.
+
+---
+
+## Step 8 — Add the performance data structures (priority queue, content hash, schema graph)
+
+**Build:** Content hashing (skip unchanged tables on re-scans), priority scoring (scan important tables first), schema graph (for join-path lookups used later at query time).
+
+**Why last:** These are optimizations on top of a system that already works correctly and reliably. Content hashing in particular only matters for *re-scans* — you don't even have a "second scan" to optimize until you've successfully done a first one. Building these too early means optimizing something that might still change shape underneath you.
+
+**Done when:** Re-scanning a database that only changed 5 tables takes seconds/minutes instead of redoing all 600.
+
+---
+
+## Step 9 — Only now consider Kafka / Redis Streams
+
+**Build:** Swap the Celery queue-based coordination for a proper event stream, if and only if you've hit a real wall — e.g., multiple tenants scanning 600+ tables simultaneously and Celery's queues are visibly struggling.
+
+**Why last, and maybe never:** Everything up to Step 8 might just be *enough*. Kafka adds real operational cost (another service to run, monitor, and maintain). Don't build it speculatively — build it when Celery's actual, measured behavior tells you it's the bottleneck.
+
+---
+
+### The one-line version of this whole order:
+
+**Correctness first (1 table → all tables → clean categories) → then plumbing (Celery tasks) → then speed (parallelism) → then safety (limits + checkpointing) → then optimization (smart data structures) → then scale infrastructure (Kafka), only if you actually need it.**
+
+Want me to break Step 1 down into an actual day-by-day coding checklist to get you started this week?
