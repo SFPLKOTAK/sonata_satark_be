@@ -228,27 +228,177 @@ def toggle_subcategory_prompt_status(request, prompt_id):
         return JsonResponse({"success": False, "message": str(e)}, status=500)
 
 
+def _fetch_table_column_schemas(table_names):
+    """
+    Fetch exact column schemas from INFORMATION_SCHEMA.COLUMNS for specified tables.
+    Returns formatted string schema representation and structured dictionary.
+    """
+    if not table_names:
+        return "", {}
+    
+    clean_tables = [t.strip().lower() for t in table_names if t.strip()]
+    if not clean_tables:
+        return "", {}
+
+    placeholders = ", ".join(["%s"] * len(clean_tables))
+    sql = f"""
+        SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE LOWER(TABLE_NAME) IN ({placeholders})
+        ORDER BY TABLE_NAME, ORDINAL_POSITION
+    """
+    try:
+        rows = _exec(sql, clean_tables)
+    except Exception as e:
+        rows = []
+
+    if not rows:
+        return "", {}
+
+    table_schemas = {}
+    for r in rows:
+        tbl = r["TABLE_NAME"]
+        if tbl not in table_schemas:
+            table_schemas[tbl] = []
+        table_schemas[tbl].append({
+            "COLUMN_NAME": r["COLUMN_NAME"],
+            "DATA_TYPE": r["DATA_TYPE"],
+            "CHARACTER_MAXIMUM_LENGTH": r["CHARACTER_MAXIMUM_LENGTH"] if r["CHARACTER_MAXIMUM_LENGTH"] is not None else "NULL",
+            "IS_NULLABLE": r["IS_NULLABLE"]
+        })
+
+    formatted_schema = ""
+    for tbl, cols in table_schemas.items():
+        formatted_schema += f"### TABLE: dbo.{tbl}\n"
+        formatted_schema += "COLUMN_NAME\tDATA_TYPE\tCHARACTER_MAXIMUM_LENGTH\tIS_NULLABLE\n"
+        for col in cols:
+            formatted_schema += f"{col['COLUMN_NAME']}\t{col['DATA_TYPE']}\t{col['CHARACTER_MAXIMUM_LENGTH']}\t{col['IS_NULLABLE']}\n"
+        formatted_schema += "\n"
+
+    return formatted_schema, table_schemas
+
+
 @csrf_exempt
 def generate_subcategory_prompt(request):
     if request.method != "POST":
         return JsonResponse({"success": False, "message": "POST only"}, status=405)
     try:
         data = json.loads(request.body)
-        db_schema = data.get("db_schema", "")
-        if not db_schema:
-            return JsonResponse({"success": False, "message": "db_schema required"}, status=400)
-        # Use Gateway AI to generate prompt
+        db_schema_input = data.get("db_schema", "")
+        category = data.get("category", "")
+        subcategory = data.get("subcategory", "")
+        table_list_input = data.get("table_list", "") or data.get("tables", "")
+
+        # 1. Determine target table names
+        target_tables = []
+        if table_list_input:
+            target_tables = [t.strip() for t in table_list_input.split(",") if t.strip()]
+        
+        if not target_tables and category and subcategory:
+            # Query existing prompt or staging tables for Table_List
+            rows = _exec("SELECT Table_List FROM dbo.Marklytix_SubcategoryPrompts WHERE LOWER(Category) = LOWER(%s) AND LOWER(Subcategory) = LOWER(%s) AND IsActive = 1", [category, subcategory])
+            if rows and rows[0].get("Table_List"):
+                target_tables = [t.strip() for t in rows[0]["Table_List"].split(",") if t.strip()]
+            else:
+                rows_stg = _exec("SELECT TableName FROM dbo.Marklytix_Staging_Subcategories WHERE LOWER(CategoryName) = LOWER(%s) AND LOWER(SubcategoryName) = LOWER(%s)", [category, subcategory])
+                if rows_stg:
+                    target_tables = list(set([r["TableName"].strip() for r in rows_stg if r.get("TableName")]))
+
+        if not target_tables and db_schema_input:
+            # Extract potential table names from input string
+            extracted = re.findall(r'[a-zA-Z0-9_]{3,}', db_schema_input)
+            if extracted:
+                placeholders = ", ".join(["%s"] * len(extracted))
+                try:
+                    valid_rows = _exec(f"SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE LOWER(TABLE_NAME) IN ({placeholders})", [t.lower() for t in extracted])
+                    target_tables = list(set([r["TABLE_NAME"] for r in valid_rows]))
+                except Exception:
+                    pass
+
+        # 2. Fetch exact INFORMATION_SCHEMA column schemas
+        formatted_schema, table_schemas = _fetch_table_column_schemas(target_tables)
+        if not formatted_schema and db_schema_input:
+            formatted_schema = db_schema_input
+
+        table_list_str = ", ".join(target_tables) if target_tables else ""
+
+        # 3. Call Gemma Gateway AI Model
         try:
             from openai import OpenAI
-            client = OpenAI(api_key=os.getenv("GEMMA_API_KEY", "sk-Y82UGER7Dw97we65RxwfnjRsiWb1CFH0vBB_zqgszUk"), base_url=os.getenv("GEMMA_BASE_URL", "http://43.242.226.49:8100/v1"))
+            client = OpenAI(
+                api_key=os.getenv("GEMMA_API_KEY", "sk-Y82UGER7Dw97we65RxwfnjRsiWb1CFH0vBB_zqgszUk"),
+                base_url=os.getenv("GEMMA_BASE_URL", "http://43.242.226.49:8100/v1")
+            )
             model = os.getenv("GEMMA_MODEL_ID", "google/gemma-4-E4B-it")
-            sys_prompt = "You are an expert SQL Server prompt engineer. Generate a specialized T-SQL query generator prompt based on the provided database schema."
-            user_msg = f"Database Schema:\n{db_schema}\n\nGenerate a detailed specialized prompt that will help an AI model generate accurate T-SQL queries for this schema."
-            response = client.chat.completions.create(model=model, messages=[{"role": "system", "content": sys_prompt}, {"role": "user", "content": user_msg}], temperature=0.3, max_tokens=2000)
-            generated = response.choices[0].message.content
+            
+            sys_prompt = (
+                "You are an expert SQL Server prompt engineer for Enterprise Financial Audits. "
+                "Generate a detailed specialized system prompt and 5 to 10 FEW-SHOT T-SQL query examples for SQL Server based on the table column schemas provided."
+            )
+            
+            user_msg = f"""
+Target Category: {category or 'General'}
+Target Subcategory: {subcategory or 'General'}
+Tables List: {table_list_str}
+
+DETAILED DATABASE SCHEMAS (INFORMATION_SCHEMA.COLUMNS):
+{formatted_schema}
+
+INSTRUCTIONS:
+1. Generate a specialized T-SQL system prompt that includes the exact table schemas, data types, nullability, and guidelines for generating queries.
+2. Provide 5-10 realistic FEW-SHOT T-SQL example queries (using SELECT TOP 100, JOINs between tables where applicable, WHERE filtering on status/dates/IDs, and GROUP BY aggregations).
+3. Return a JSON object with:
+   - "prompt_content": System prompt instructions containing the schemas and query guidelines.
+   - "query_patterns": Few-shot T-SQL query templates with comments describing each query.
+   - "table_list": Comma-separated string of all table names.
+"""
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": user_msg}
+                ],
+                temperature=0.2,
+                max_tokens=2500
+            )
+            ai_text = response.choices[0].message.content.strip()
+            
+            prompt_content = ai_text
+            query_patterns = ""
+            if "```json" in ai_text:
+                json_str = ai_text.split("```json")[1].split("```")[0].strip()
+                try:
+                    parsed = json.loads(json_str)
+                    prompt_content = parsed.get("prompt_content", ai_text)
+                    query_patterns = parsed.get("query_patterns", "")
+                    if parsed.get("table_list"):
+                        table_list_str = parsed.get("table_list")
+                except Exception:
+                    pass
+            elif ai_text.startswith("{") and ai_text.endswith("}"):
+                try:
+                    parsed = json.loads(ai_text)
+                    prompt_content = parsed.get("prompt_content", ai_text)
+                    query_patterns = parsed.get("query_patterns", "")
+                except Exception:
+                    pass
+
         except Exception as e_ai:
-            generated = f"You are a specialized SQL generator for the following schema:\n{db_schema}\n\nGenerate accurate T-SQL queries based on user questions. Always use proper SQL Server syntax."
-        return JsonResponse({"success": True, "generated_prompt": generated})
+            prompt_content = f"You are a specialized T-SQL query generator for {category} -> {subcategory}.\n\n[AVAILABLE SCHEMAS]\n{formatted_schema}\n\nGenerate accurate T-SQL queries using proper SQL Server syntax."
+            query_patterns = f"-- FEW-SHOT T-SQL QUERY EXAMPLES\n\n1. Select top 100 records:\nSELECT TOP 100 * FROM {target_tables[0] if target_tables else 'table_name'};"
+
+        return JsonResponse({
+            "success": True,
+            "data": {
+                "prompt_content": prompt_content,
+                "table_list": table_list_str,
+                "query_patterns": query_patterns,
+                "schema_definitions": formatted_schema
+            },
+            "generated_prompt": prompt_content,
+            "table_list": table_list_str,
+            "query_patterns": query_patterns
+        })
     except Exception as e:
         return JsonResponse({"success": False, "message": str(e)}, status=500)
 

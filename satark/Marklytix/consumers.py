@@ -9,9 +9,15 @@ import base64
 import hashlib
 import logging
 import threading
-import random
+import pandas as pd
 from datetime import datetime, timedelta
 from urllib.parse import quote_plus
+from dotenv import load_dotenv
+from pathlib import Path
+
+base_dir = Path(__file__).resolve().parent.parent
+load_dotenv(base_dir / '.env', override=True)
+load_dotenv(base_dir.parent / '.env', override=True)
 
 # Vector Database imports (Chroma DB)
 try:
@@ -481,23 +487,15 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
         self.cache_ttl = 3600  # Cache TTL in seconds (1 hour)
         self.cache_prefix = f"marklytix_search_{self.prompt_name.lower()}:"
         
-        # Load keywords from database with class-level caching
-        if not HierarchicalSearchConsumer._keywords_loaded or not getattr(HierarchicalSearchConsumer, '_category_keywords_db', None):
-            self.load_keywords_from_database()
-            self.search_tree = self.build_database_tree_with_prompts()
-            
-            # Cache them in class variables if populated
-            HierarchicalSearchConsumer._category_keywords_db = self.category_keywords_db
-            HierarchicalSearchConsumer._subcategory_keywords_db = self.subcategory_keywords_db
-            HierarchicalSearchConsumer._search_tree = self.search_tree
-            if self.category_keywords_db and len(self.category_keywords_db) > 0:
-                HierarchicalSearchConsumer._keywords_loaded = True
-            print("loaded and cached hierarchical search configurations in memory.")
-        else:
-            self.category_keywords_db = HierarchicalSearchConsumer._category_keywords_db
-            self.subcategory_keywords_db = HierarchicalSearchConsumer._subcategory_keywords_db
-            self.search_tree = HierarchicalSearchConsumer._search_tree
-            print("using in-memory cached hierarchical search configurations.")
+        # Load keywords from database to ensure fresh data from Marklytix_Categories & Subcategories
+        self.load_keywords_from_database()
+        self.search_tree = self.build_database_tree_with_prompts()
+        
+        HierarchicalSearchConsumer._category_keywords_db = self.category_keywords_db
+        HierarchicalSearchConsumer._subcategory_keywords_db = self.subcategory_keywords_db
+        HierarchicalSearchConsumer._search_tree = self.search_tree
+        HierarchicalSearchConsumer._keywords_loaded = True
+        print(f"Loaded hierarchical search configurations from DB ({len(self.category_keywords_db)} categories).")
             
         # Initialize Chroma DB local persistent vector store
         self._init_chroma_vector_store()
@@ -760,7 +758,7 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
                 
                 # Prepare HTML table output
                 print("🔄 Preparing HTML table output...")
-                output = db_results.head(5).to_html(index=False)
+                output = db_results.head(5).to_html(index=False, na_rep="-")
                 db_results_1 = db_results.head(5)
                 print(f"✅ HTML table prepared with {len(db_results_1)} rows")
                 print("")
@@ -1469,8 +1467,6 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
 
     def _init_chroma_vector_store(self):
         """Initialize local persistent Chroma DB vector collections directly from database keywords"""
-        if HierarchicalSearchConsumer._chroma_initialized:
-            return
         self.sync_chroma_db_from_database()
 
     _schema_collection = None
@@ -2355,14 +2351,24 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
             return HierarchicalSearchConsumer._subcategory_prompts_cache[prompt_key]
             
         try:
-            prompt_name = f"{category}_{subcategory}"
-            
+            if not getattr(self, 'engine', None):
+                sql_user = os.environ.get('DATABASE_USER', '')
+                sql_password = os.environ.get('DATABASE_PASSWORD', '')
+                sql_server = os.environ.get('DATABASE_HOST', '')
+                sql_db = os.environ.get('DATABASE_NAME', '')
+                sql_driver = os.environ.get('DATABASE_DRIVER', 'ODBC Driver 17 for SQL Server')
+                connection_url = (
+                    f"mssql+pyodbc://{sql_user}:{quote_plus(sql_password)}@{sql_server}/{sql_db}"
+                    f"?driver={sql_driver.replace(' ', '+')}"
+                )
+                self.engine = create_engine(connection_url, fast_executemany=True)
+
             with self.engine.begin() as connection:
                 query = text("""
-                    SELECT PromptContent, Table_List, Query_Patterns, Schema_Definitions
-                    FROM Marklytix_SubcategoryPrompts 
-                    WHERE Category = :category 
-                      AND Subcategory = :subcategory 
+                    SELECT PromptContent, Table_List, Query_Patterns
+                    FROM dbo.Marklytix_SubcategoryPrompts 
+                    WHERE LOWER(Category) = LOWER(:category) 
+                      AND LOWER(Subcategory) = LOWER(:subcategory) 
                       AND IsActive = 1
                 """)
                 result = connection.execute(query, {
@@ -2372,24 +2378,18 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
                 row = result.fetchone()
                 
                 if row:
-                    prompt_content = row[0]
+                    prompt_content = row[0] or ""
                     table_list = row[1] or ""
                     query_patterns = row[2] or ""
-                    schema_definitions = row[3] or ""
                     
-                    # Combine all components into a comprehensive prompt
-                    full_prompt = f"""
-                    {prompt_content}
-                    
-                    AVAILABLE TABLES: {table_list}
-                    
-                    QUERY PATTERNS:
-                    {query_patterns}
-                    
-                    SCHEMA DEFINITIONS:
-                    {schema_definitions}
-                    """
-                    
+                    # Combine components into comprehensive prompt
+                    full_prompt = f"""{prompt_content}
+
+AVAILABLE TABLES: {table_list}
+
+QUERY PATTERNS:
+{query_patterns}
+"""
                     HierarchicalSearchConsumer._subcategory_prompts_cache[prompt_key] = full_prompt
                     return full_prompt
                 else:
