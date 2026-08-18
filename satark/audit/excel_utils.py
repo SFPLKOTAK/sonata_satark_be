@@ -6,28 +6,22 @@ from openpyxl.worksheet.protection import SheetProtection
 
 def _protect_sheet(ws):
     """
-    Lock the worksheet so it is view-only.
-    - Sheet is protected (no edits, no inserts, no deletes, no formatting).
-    - AutoFilter (column filters) is the ONLY operation permitted.
-    - No password is required to VIEW; the protection is passwordless but
-      enforced by Excel — users simply cannot edit any cell.
+    Lock the worksheet so it is read-only for editing but copyable.
+    - Sheet is protected against editing, typing, deleting, and formatting.
+    - Copying content (Ctrl+C / Right Click Copy) and AutoFilter remain enabled.
     """
-    ws.protection = SheetProtection(
-        sheet=True,           # enable protection
-        password='',          # no password needed to turn it off, but sheet is still locked
-        selectLockedCells=True,
-        selectUnlockedCells=True,
-        autoFilter=False,     # False here means "do NOT restrict autoFilter" → filtering is allowed
-        sort=True,            # True means "restrict sort" → sorting blocked (change to False to allow)
-        insertRows=True,
-        insertColumns=True,
-        deleteRows=True,
-        deleteColumns=True,
-        formatCells=True,
-        formatColumns=True,
-        formatRows=True,
-        pivotTables=True,
-    )
+    ws.protection.sheet = True
+    ws.protection.selectLockedCells = False   # False in openpyxl XML allows selecting & copying
+    ws.protection.selectUnlockedCells = False # False allows selecting unlocked cells
+    ws.protection.autoFilter = False          # Allow filtering columns
+    ws.protection.sort = False                # Allow sorting
+    ws.protection.insertRows = True           # Restrict inserting rows
+    ws.protection.insertColumns = True        # Restrict inserting columns
+    ws.protection.deleteRows = True           # Restrict deleting rows
+    ws.protection.deleteColumns = True        # Restrict deleting columns
+    ws.protection.formatCells = True          # Restrict formatting cells
+    ws.protection.formatColumns = True        # Restrict formatting columns
+    ws.protection.formatRows = True           # Restrict formatting rows
 
 
 def generate_branch_audit_excel(metadata, branch_points, center_points, client_points):

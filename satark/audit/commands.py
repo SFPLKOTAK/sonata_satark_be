@@ -223,6 +223,7 @@ class StartBranchAuditCommandHandler(CommandHandler):
                     SELECT id, branch_id, start_date, end_date
                     FROM dbo.audit_plan_current
                     WHERE branch_id = %s OR id = %s
+                    ORDER BY id DESC
                 """, [branch_id, branch_id])
                 plan_row = cursor.fetchone()
 
@@ -231,6 +232,8 @@ class StartBranchAuditCommandHandler(CommandHandler):
 
                 audit_id, plan_branch_id, start_date, end_date = plan_row
 
+                print(audit_id,plan_branch_id,start_date,end_date)
+                
                 cursor.execute("SELECT 1 FROM dbo.audit_branch_progress WHERE audit_id = %s", [audit_id])
                 exists = cursor.fetchone()
 
@@ -239,7 +242,7 @@ class StartBranchAuditCommandHandler(CommandHandler):
                         UPDATE dbo.audit_branch_progress
                         SET audit_status = 'in-progress',
                             audit_assigned_to = %s
-                        WHERE audit_id = %s
+                        WHERE audit_id = %s and audit_status <> 'reverted'
                     """, [user.UserID, audit_id])
                 else:
                     cursor.execute("""
