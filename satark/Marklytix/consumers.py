@@ -400,6 +400,17 @@ class DatabaseSearchTree:
         if node:
             return node.get_all_tables()
         return []
+
+    def get_tables_for_category_subcategory(self, category_name, subcategory_name):
+        """Get all tables directly by category and subcategory names without string splitting"""
+        cat_key = (category_name or "").strip().lower()
+        sub_key = (subcategory_name or "").strip().lower()
+        cat = self.categories.get(cat_key)
+        if cat:
+            sub = cat.find_child_by_name(sub_key)
+            if sub:
+                return sub.get_all_tables()
+        return []
         
     def search_nodes_by_keywords(self, keywords, level=None):
         """Search for nodes matching given keywords"""
@@ -487,23 +498,19 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
         self.cache_ttl = 3600  # Cache TTL in seconds (1 hour)
         self.cache_prefix = f"marklytix_search_{self.prompt_name.lower()}:"
         
-        # Check if already initialized at class level
-        if not getattr(HierarchicalSearchConsumer, '_keywords_loaded', False) or getattr(HierarchicalSearchConsumer, '_search_tree', None) is None:
-            self.load_keywords_from_database()
-            self.search_tree = self.build_database_tree_with_prompts()
+        # Always load fresh keywords and database search tree from SQL Server
+        self.load_keywords_from_database()
+        self.search_tree = self.build_database_tree_with_prompts()
+        
+        HierarchicalSearchConsumer._category_keywords_db = self.category_keywords_db
+        HierarchicalSearchConsumer._subcategory_keywords_db = self.subcategory_keywords_db
+        HierarchicalSearchConsumer._search_tree = self.search_tree
+        HierarchicalSearchConsumer._keywords_loaded = True
+        print(f"Loaded hierarchical search configurations from DB ({len(self.category_keywords_db)} category keyword lists).")
             
-            HierarchicalSearchConsumer._category_keywords_db = self.category_keywords_db
-            HierarchicalSearchConsumer._subcategory_keywords_db = self.subcategory_keywords_db
-            HierarchicalSearchConsumer._search_tree = self.search_tree
-            HierarchicalSearchConsumer._keywords_loaded = True
-            print(f"Loaded hierarchical search configurations from DB ({len(self.category_keywords_db)} categories).")
-                
-            # Initialize Chroma DB local persistent vector store
+        # Initialize Chroma DB local persistent vector store if needed
+        if not getattr(HierarchicalSearchConsumer, '_chroma_initialized', False):
             self._init_chroma_vector_store()
-        else:
-            self.category_keywords_db = getattr(HierarchicalSearchConsumer, '_category_keywords_db', {})
-            self.subcategory_keywords_db = getattr(HierarchicalSearchConsumer, '_subcategory_keywords_db', {})
-            self.search_tree = getattr(HierarchicalSearchConsumer, '_search_tree', None)
         
         # Initialize AI models
         self.get_model()
@@ -1150,55 +1157,91 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
     def build_database_tree_with_prompts(self):
         """
         Build the complete database tree structure with all categories, subcategories, and tables
-        This will be called once during initialization
+        Combines Marklytix_Categories, Marklytix_Subcategories, and Marklytix_SubcategoryPrompts
         """
         tree = DatabaseSearchTree()
         
-        # Load tree structure from database
         try:
             with self.engine.begin() as connection:
-                # Get all active subcategory prompts to build the tree
-                query = text("""
-                    SELECT  Category, Subcategory, Table_List
-                    FROM Marklytix_SubcategoryPrompts 
-                    WHERE IsActive = 1
-                    ORDER BY Category, Subcategory
-                """)
-                result = connection.execute(query)
-                rows = result.fetchall()
-                
-                for row in rows:
-                    category = row[0].strip().lower() if row[0] else ""
-                    subcategory = row[1].strip().lower() if row[1] else "" 
-                    table_list = row[2] or ""
-                    
-                    # Parse table list (assuming comma-separated)
-                    tables = [t.strip() for t in table_list.split(',') if t.strip()]
-                    
-                    # Add category if not exists
-                    if category not in tree.categories:
-                        tree.add_category(
-                            name=category,
-                            keywords=self.get_category_keywords(category),
-                            tables=[]
-                        )
-                    
-                    # Add subcategory
-                    tree.add_subcategory(
-                        parent_name=category,
-                        name=subcategory,
-                        keywords=self.get_subcategory_keywords(category, subcategory),
-                        tables=tables
-                    )
-                    
-                    print(f"Added {category} -> {subcategory} with {len(tables)} tables")
-                
+                # 1. Add all active categories from Marklytix_Categories
+                try:
+                    cat_query = text("SELECT CategoryName FROM dbo.Marklytix_Categories WHERE IsActive = 1")
+                    cat_rows = connection.execute(cat_query).fetchall()
+                    for cat_row in cat_rows:
+                        cat_name = cat_row[0].strip().lower() if cat_row[0] else ""
+                        if cat_name and cat_name not in tree.categories:
+                            tree.add_category(
+                                name=cat_name,
+                                keywords=self.get_category_keywords(cat_name),
+                                tables=[]
+                            )
+                except Exception as _e_cat:
+                    print(f"Notice fetching categories from Marklytix_Categories: {_e_cat}")
+
+                # 2. Add all active subcategories from Marklytix_Subcategories
+                try:
+                    subcat_query = text("SELECT CategoryName, SubcategoryName FROM dbo.Marklytix_Subcategories WHERE IsActive = 1")
+                    subcat_rows = connection.execute(subcat_query).fetchall()
+                    for sub_row in subcat_rows:
+                        cat_name = sub_row[0].strip().lower() if sub_row[0] else ""
+                        sub_name = sub_row[1].strip().lower() if sub_row[1] else ""
+                        if cat_name and sub_name:
+                            if cat_name not in tree.categories:
+                                tree.add_category(
+                                    name=cat_name,
+                                    keywords=self.get_category_keywords(cat_name),
+                                    tables=[]
+                                )
+                            tree.add_subcategory(
+                                parent_name=cat_name,
+                                name=sub_name,
+                                keywords=self.get_subcategory_keywords(cat_name, sub_name),
+                                tables=[]
+                            )
+                except Exception as _e_sub:
+                    print(f"Notice fetching subcategories from Marklytix_Subcategories: {_e_sub}")
+
+                # 3. Enrich tree with table lists from Marklytix_SubcategoryPrompts
+                try:
+                    prompt_query = text("""
+                        SELECT Category, Subcategory, Table_List
+                        FROM Marklytix_SubcategoryPrompts 
+                        WHERE IsActive = 1
+                        ORDER BY Category, Subcategory
+                    """)
+                    prompt_rows = connection.execute(prompt_query).fetchall()
+                    for p_row in prompt_rows:
+                        category = p_row[0].strip().lower() if p_row[0] else ""
+                        subcategory = p_row[1].strip().lower() if p_row[1] else ""
+                        table_list = p_row[2] or ""
+                        tables = [t.strip() for t in table_list.split(',') if t.strip()]
+
+                        if category:
+                            if category not in tree.categories:
+                                tree.add_category(
+                                    name=category,
+                                    keywords=self.get_category_keywords(category),
+                                    tables=[]
+                                )
+                            if subcategory:
+                                tree.add_subcategory(
+                                    parent_name=category,
+                                    name=subcategory,
+                                    keywords=self.get_subcategory_keywords(category, subcategory),
+                                    tables=tables
+                                )
+                                # Update tables if node exists
+                                sub_node = tree.categories[category].find_child_by_name(subcategory)
+                                if sub_node and tables:
+                                    sub_node.tables = list(set(sub_node.tables + tables))
+                except Exception as _e_p:
+                    print(f"Notice fetching prompts from Marklytix_SubcategoryPrompts: {_e_p}")
+
                 print(f"Database tree built with {len(tree.categories)} categories and {tree.total_tables} total tables")
                 return tree
                 
         except Exception as e:
             print(f"Error building database tree: {e}")
-            # Return empty tree as fallback
             return DatabaseSearchTree()
 
     def load_keywords_from_database(self):
@@ -1484,7 +1527,7 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
 
 
 
-    def retrieve_top_k_schemas_chroma(self, query, k=2):
+    def retrieve_top_k_schemas_chroma(self, query, k=2, table_names=None):
         """Retrieve top K relevant table schemas for dynamic RAG prompt injection from disk storage"""
         if not HAS_CHROMADB:
             return ""
@@ -1492,15 +1535,21 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
         try:
             storage_dir = os.path.join(os.path.dirname(__file__), "scratch", "chroma_db_storage")
             client = chromadb.PersistentClient(path=storage_dir)
-            # ef = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
-            # schema_coll = client.get_collection(name="marklytix_table_schemas", embedding_function=ef)
-            # Using Chroma's default embedding function to avoid sentence-transformers dependency
             schema_coll = client.get_collection(name="marklytix_table_schemas")
 
-            results = schema_coll.query(
-                query_texts=[query],
-                n_results=k
-            )
+            query_kwargs = {
+                "query_texts": [query],
+                "n_results": k
+            }
+
+            if table_names and isinstance(table_names, list) and len(table_names) > 0:
+                clean_tables = [t.strip() for t in table_names if t.strip()]
+                if len(clean_tables) == 1:
+                    query_kwargs["where"] = {"table_name": clean_tables[0]}
+                elif len(clean_tables) > 1:
+                    query_kwargs["where"] = {"table_name": {"$in": clean_tables}}
+
+            results = schema_coll.query(**query_kwargs)
             schemas = []
             if results and results.get('documents') and results['documents'][0]:
                 for doc, meta in zip(results['documents'][0], results['metadatas'][0]):
@@ -2256,10 +2305,27 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
             
             print("✅ Specialized prompt found, proceeding with prompt-based generation")
             
-            # Get available tables for this subcategory
-            path = f"{category}_{subcategory}"
-            available_tables = search_tree.get_tables_for_path(path)
-            print(f"📋 Available tables for {path}: {available_tables}")
+            # Get available tables for this subcategory using direct lookup first
+            available_tables = search_tree.get_tables_for_category_subcategory(category, subcategory)
+            if not available_tables:
+                path = f"{category}_{subcategory}"
+                available_tables = search_tree.get_tables_for_path(path)
+                
+            # Direct SQL fallback if search_tree did not contain tables
+            if not available_tables:
+                try:
+                    with self.engine.begin() as connection:
+                        t_query = text("""
+                            SELECT Table_List FROM dbo.Marklytix_SubcategoryPrompts
+                            WHERE LOWER(Category) = LOWER(:cat) AND LOWER(Subcategory) = LOWER(:sub) AND IsActive = 1
+                        """)
+                        t_res = connection.execute(t_query, {"cat": category, "sub": subcategory}).fetchone()
+                        if t_res and t_res[0]:
+                            available_tables = [t.strip() for t in t_res[0].split(',') if t.strip()]
+                except Exception as _e_t:
+                    logger.error(f"Error fetching Table_List directly: {_e_t}")
+
+            print(f"📋 Available tables for {category} -> {subcategory}: {available_tables}")
             
             if not available_tables:
                 print("⚠️  No tables found for this subcategory")
@@ -2268,12 +2334,12 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
                     'tables': [],
                     'query': 'No tables available for this subcategory',
                     'confidence': 0.1,
-                    'reasoning': f'No tables found for {path}'
+                    'reasoning': f'No tables found for {category} -> {subcategory}'
                 }
             
-            # Dynamic Chroma DB Schema RAG Retrieval
+            # Dynamic Chroma DB Schema RAG Retrieval (scoped to available subcategory tables)
             print("🧠 [Chroma DB RAG] Fetching dynamic table schemas from Chroma vector store...")
-            rag_schemas = self.retrieve_top_k_schemas_chroma(message, k=2)
+            rag_schemas = self.retrieve_top_k_schemas_chroma(message, k=2, table_names=available_tables)
             
             if rag_schemas:
                 print("✅ Dynamic table schemas retrieved successfully from Chroma DB:")
