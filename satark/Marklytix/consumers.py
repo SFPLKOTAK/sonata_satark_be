@@ -2401,4 +2401,173 @@ QUERY PATTERNS:
             return None
 
 
+class ChatHistoryConsumer(WebsocketConsumer):
+    """
+    WebSocket Consumer for History Page and Sidebar Recent Chats (/ws/history/)
+    Retrieves previous conversation list, message history for a ChatID, and CSV exports.
+    """
+    def connect(self):
+        sql_user = os.environ.get('DATABASE_USER', '')
+        sql_password = os.environ.get('DATABASE_PASSWORD', '')
+        sql_server = os.environ.get('DATABASE_HOST', '')
+        sql_db = os.environ.get('DATABASE_NAME', '')
+        sql_driver = os.environ.get('DATABASE_DRIVER', 'ODBC Driver 17 for SQL Server')
+        connection_url = (
+            f"mssql+pyodbc://{sql_user}:{quote_plus(sql_password)}@{sql_server}/{sql_db}"
+            f"?driver={sql_driver.replace(' ', '+')}"
+        )
+        self.engine = create_engine(connection_url, fast_executemany=True)
+        self.accept()
+        self.send_chat_list()
+
+    def disconnect(self, close_code):
+        if hasattr(self, 'engine') and self.engine:
+            self.engine.dispose()
+
+    def receive(self, text_data):
+        try:
+            data = json.loads(text_data)
+            action = data.get("action")
+
+            if action == "get_chat_list":
+                self.send_chat_list()
+            elif action == "get_chat":
+                chat_id = data.get("chat_id")
+                if chat_id:
+                    self.send_chat_messages(chat_id)
+            elif action == "csv_download":
+                chat_id = data.get("chat_id")
+                if chat_id:
+                    self.send_chat_csv(chat_id)
+        except Exception as e:
+            logging.error(f"Error handling ChatHistoryConsumer receive: {e}")
+
+    def send_chat_list(self):
+        try:
+            with self.engine.begin() as conn:
+                sql = text("""
+                    WITH RankedQuestions AS (
+                        SELECT 
+                            ChatID,
+                            Question,
+                            Username,
+                            Created_At,
+                            ROW_NUMBER() OVER (PARTITION BY ChatID ORDER BY Id ASC) as rn
+                        FROM dbo.Marklytix_ChatHistory
+                        WHERE Question IS NOT NULL AND Question <> ''
+                    ),
+                    ChatStats AS (
+                        SELECT 
+                            ChatID,
+                            MAX(Created_At) as max_created_at,
+                            COUNT(Id) as message_count
+                        FROM dbo.Marklytix_ChatHistory
+                        GROUP BY ChatID
+                    )
+                    SELECT 
+                        s.ChatID,
+                        q.Question as first_question,
+                        q.Username,
+                        s.max_created_at,
+                        s.message_count
+                    FROM ChatStats s
+                    LEFT JOIN RankedQuestions q ON s.ChatID = q.ChatID AND q.rn = 1
+                    ORDER BY s.max_created_at DESC
+                """)
+                rows = conn.execute(sql).fetchall()
+                chats = []
+                for r in rows:
+                    q_text = (r[1] or "").strip()
+                    title_words = q_text.split() if q_text else []
+                    title = " ".join(title_words[:6]) if title_words else f"Chat #{r[0]}"
+                    if len(title_words) > 6:
+                        title += "..."
+                    
+                    chats.append({
+                        "ChatID": r[0],
+                        "first_question": q_text or title,
+                        "question": q_text or title,
+                        "title": title,
+                        "Username": r[2] or "SONATABOT",
+                        "created_at": r[3].isoformat() if r[3] else datetime.now().isoformat(),
+                        "message_count": r[4]
+                    })
+                self.send(text_data=json.dumps({
+                    "type": "chat_list",
+                    "chats": chats
+                }))
+        except Exception as e:
+            logging.error(f"Error in send_chat_list: {e}")
+            self.send(text_data=json.dumps({"type": "chat_list", "chats": []}))
+
+    def send_chat_messages(self, chat_id):
+        try:
+            with self.engine.begin() as conn:
+                sql = text("""
+                    SELECT 
+                        Sender,
+                        Question,
+                        Result_Generated,
+                        Response_Table,
+                        Generated_Query,
+                        Query_Creation_Time,
+                        Query_Execution_Time,
+                        Created_At
+                    FROM dbo.Marklytix_ChatHistory
+                    WHERE ChatID = :chat_id
+                    ORDER BY Id ASC
+                """)
+                rows = conn.execute(sql, {"chat_id": chat_id}).fetchall()
+                messages = []
+                for r in rows:
+                    sender = (r[0] or "bot").lower()
+                    messages.append({
+                        "sender": sender,
+                        "question": r[1] or "",
+                        "result_generated": r[2] or r[1] or "",
+                        "response_table": r[3] or "",
+                        "generated_query": r[4] or "",
+                        "query_creation_time": r[5] or 0.0,
+                        "query_execution_time": r[6] or 0.0,
+                        "created_at": r[7].isoformat() if r[7] else datetime.now().isoformat()
+                    })
+                self.send(text_data=json.dumps({
+                    "type": "chat_messages",
+                    "chat_id": chat_id,
+                    "messages": messages
+                }))
+        except Exception as e:
+            logging.error(f"Error in send_chat_messages for ChatID {chat_id}: {e}")
+            self.send(text_data=json.dumps({
+                "type": "chat_messages",
+                "chat_id": chat_id,
+                "messages": []
+            }))
+
+    def send_chat_csv(self, chat_id):
+        try:
+            with self.engine.begin() as conn:
+                sql = text("""
+                    SELECT Question, Generated_Query, Result_Generated, Created_At
+                    FROM dbo.Marklytix_ChatHistory
+                    WHERE ChatID = :chat_id
+                    ORDER BY Id ASC
+                """)
+                rows = conn.execute(sql, {"chat_id": chat_id}).fetchall()
+                csv_buffer = io.StringIO()
+                writer = csv.writer(csv_buffer)
+                writer.writerow(["Question", "Generated_Query", "Result_Generated", "Created_At"])
+                for r in rows:
+                    writer.writerow([r[0] or "", r[1] or "", r[2] or "", r[3] or ""])
+                
+                self.send(text_data=json.dumps({
+                    "type": "csv_download",
+                    "filename": f"chat_history_{chat_id}.csv",
+                    "csv_data": csv_buffer.getvalue()
+                }))
+        except Exception as e:
+            logging.error(f"Error generating chat CSV: {e}")
+
+
+
 # -------------------------------------- ai graph consumer ------------------------------------- #
