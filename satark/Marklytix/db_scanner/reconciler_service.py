@@ -330,6 +330,7 @@ class MarklytixReconciler:
                 print(f"[ENRICHING] Prompt ID {p_id}: '{cat_name}' -> '{sub_name}' (Tables: {table_names})...")
                 prompt_content, query_patterns = generate_15_pattern_master_prompt(conn, cat_name, sub_name, table_names)
                 
+                patterns_json = json.dumps(query_patterns) if isinstance(query_patterns, (list, dict)) else str(query_patterns or "")
                 update_sql = text("""
                     UPDATE dbo.Marklytix_SubcategoryPrompts
                     SET PromptContent = :prompt,
@@ -337,7 +338,7 @@ class MarklytixReconciler:
                         ModifiedDate = GETDATE()
                     WHERE Id = :id
                 """)
-                conn.execute(update_sql, {"prompt": prompt_content, "patterns": query_patterns, "id": p_id})
+                conn.execute(update_sql, {"prompt": prompt_content, "patterns": patterns_json, "id": p_id})
                 count += 1
                 print(f"[ENRICHED OK] Saved 15-pattern master prompt for ID {p_id} ('{sub_name}')")
             return count
@@ -537,6 +538,7 @@ class MarklytixReconciler:
 
                     print(f"[ENRICHING PROMPT] Fetching INFORMATION_SCHEMA columns & generating 15-pattern master prompt for {merged_tbl_str}...")
                     prompt_content, query_patterns = generate_15_pattern_master_prompt(conn, cat_name, sub_name, merged_tbls)
+                    patterns_json = json.dumps(query_patterns) if isinstance(query_patterns, (list, dict)) else str(query_patterns or "")
 
                     update_p_sql = text("""
                         UPDATE dbo.Marklytix_SubcategoryPrompts
@@ -549,7 +551,7 @@ class MarklytixReconciler:
                     conn.execute(update_p_sql, {
                         "tbl_list": merged_tbl_str,
                         "prompt": prompt_content,
-                        "patterns": query_patterns,
+                        "patterns": patterns_json,
                         "id": p_id
                     })
                 else:
@@ -558,6 +560,7 @@ class MarklytixReconciler:
 
                     print(f"[ENRICHING PROMPT] Fetching INFORMATION_SCHEMA columns & generating 15-pattern master prompt for {merged_tbl_str}...")
                     prompt_content, query_patterns = generate_15_pattern_master_prompt(conn, cat_name, sub_name, merged_tbls)
+                    patterns_json = json.dumps(query_patterns) if isinstance(query_patterns, (list, dict)) else str(query_patterns or "")
                     
                     insert_p_sql = text("""
                         INSERT INTO dbo.Marklytix_SubcategoryPrompts
@@ -570,7 +573,7 @@ class MarklytixReconciler:
                         "sub_name": sub_name,
                         "tbl_list": merged_tbl_str,
                         "prompt": prompt_content,
-                        "patterns": query_patterns
+                        "patterns": patterns_json
                     })
 
                 promoted_subs_count += 1

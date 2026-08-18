@@ -248,25 +248,209 @@ Respond strictly in valid JSON format with NO markdown wrapping or additional te
             rows = conn.execute(query).fetchall()
             return [r[0] for r in rows]
 
-    def scan_all_tables_sequential(self, limit: int = None) -> list:
-        """Step 2: Sequential scan across all database tables into Staging."""
+    def get_existing_taxonomy(self) -> dict:
+        """Fetch existing distinct categories and subcategories from staging & main database tables."""
+        categories = set()
+        subcategories = set()
+        with self.engine.connect() as conn:
+            try:
+                c_rows = conn.execute(text("SELECT DISTINCT CategoryName FROM dbo.Marklytix_Staging_Categories WHERE CategoryName IS NOT NULL AND CategoryName <> ''")).fetchall()
+                for r in c_rows: categories.add(r[0].strip())
+                s_rows = conn.execute(text("SELECT DISTINCT SubcategoryName FROM dbo.Marklytix_Staging_Subcategories WHERE SubcategoryName IS NOT NULL AND SubcategoryName <> ''")).fetchall()
+                for r in s_rows: subcategories.add(r[0].strip())
+            except Exception:
+                pass
+
+            try:
+                mc_rows = conn.execute(text("SELECT DISTINCT CategoryName FROM dbo.Marklytix_Categories WHERE CategoryName IS NOT NULL AND CategoryName <> ''")).fetchall()
+                for r in mc_rows: categories.add(r[0].strip())
+                ms_rows = conn.execute(text("SELECT DISTINCT SubcategoryName FROM dbo.Marklytix_Subcategories WHERE SubcategoryName IS NOT NULL AND SubcategoryName <> ''")).fetchall()
+                for r in ms_rows: subcategories.add(r[0].strip())
+            except Exception:
+                pass
+
+        return {
+            "categories": sorted(list(categories)),
+            "subcategories": sorted(list(subcategories))
+        }
+
+    def categorize_tables_chunk_with_gemma(self, meta_list: list, existing_taxonomy: dict = None) -> list:
+        """
+        Call Gemma Gateway LLM API for a chunk of up to 5 tables at once.
+        Passes existing database taxonomy to enforce reusing categories & subcategories and keeping taxonomy small (~10 categories, ~20 subcategories).
+        """
+        if not meta_list:
+            return []
+
+        taxonomy_block = ""
+        if existing_taxonomy and (existing_taxonomy.get("categories") or existing_taxonomy.get("subcategories")):
+            existing_cats = ", ".join([f'"{c}"' for c in existing_taxonomy.get("categories", [])]) or "None"
+            existing_subs = ", ".join([f'"{s}"' for s in existing_taxonomy.get("subcategories", [])]) or "None"
+            taxonomy_block = f"""
+EXISTING SYSTEM TAXONOMY IN DATABASE:
+- Existing Categories ({len(existing_taxonomy.get('categories', []))}): [{existing_cats}]
+- Existing Subcategories ({len(existing_taxonomy.get('subcategories', []))}): [{existing_subs}]
+
+STRICT CONSTRAINTS FOR CATEGORIZATION:
+1. MANDATORY REUSE: Examine the Existing Categories and Existing Subcategories above. If a table logically belongs to any existing Category or Subcategory, YOU MUST REUSE IT EXACTLY (same case and spelling).
+2. DO NOT CREATE NEW CATEGORIES UNLESS NECESSARY: Only create a new category or subcategory if a table cannot fit into ANY existing category.
+3. CONSOLIDATION TARGET: Aim for a concise total taxonomy (~10 broad Categories and ~20 Subcategories across the entire database, averaging ~5 tables per subcategory). Group related tables together.
+"""
+
+        tables_prompt_block = ""
+        for idx, meta in enumerate(meta_list, 1):
+            cols_list = [f"{c['name']} ({c['type']})" for c in meta['columns'][:20]]
+            if len(meta['columns']) > 20:
+                cols_list.append(f"... +{len(meta['columns'])-20} more columns")
+            cols_str = ", ".join(cols_list)
+            
+            fks_str = ", ".join([f"{fk['column']} -> {fk['referenced_table']}" for fk in meta['foreign_keys']]) or "None"
+            
+            sample_brief = []
+            if meta.get('sample_rows'):
+                for row in meta['sample_rows'][:1]:
+                    clean_row = {}
+                    for k, v in list(row.items())[:10]:
+                        val_str = str(v) if v is not None else ""
+                        clean_row[k] = (val_str[:30] + '...') if len(val_str) > 30 else val_str
+                    sample_brief.append(clean_row)
+            samples_str = json.dumps(sample_brief) if sample_brief else "No data"
+
+            tables_prompt_block += f"""
+--- TABLE {idx}: "{meta['table_name']}" ---
+Columns: {cols_str}
+Foreign Keys: {fks_str}
+Sample: {samples_str}
+"""
+
+        prompt = f"""
+You are a database domain expert. Analyze the schemas and sample data for the following {len(meta_list)} SQL Server tables.
+For EACH table, classify it into a business Category, Subcategory, and relevant search Keywords.
+{taxonomy_block}
+TABLES TO ANALYZE:
+{tables_prompt_block}
+
+INSTRUCTIONS:
+Respond strictly in valid JSON format with NO markdown wrapping or additional text.
+Return a JSON object containing a "tables" array with exactly {len(meta_list)} objects corresponding to each table:
+
+{{
+  "tables": [
+    {{
+      "table_name": "exact_table_name_here",
+      "category_name": "Broad business category (PREFER REUSING EXISTING CATEGORY IF MATCHING)",
+      "category_description": "Short explanation of the business category",
+      "category_keywords": ["10 to 15 search keywords for this category"],
+      "subcategory_name": "Specific subcategory name (PREFER REUSING EXISTING SUBCATEGORY IF MATCHING)",
+      "subcategory_description": "Short description of this subcategory",
+      "subcategory_keywords": ["10 to 15 search keywords for this subcategory and table"]
+    }}
+  ]
+}}
+"""
+        try:
+            response = self.llm_client.chat.completions.create(
+                model=self.gemma_model_id,
+                messages=[
+                    {"role": "system", "content": "You are a precise database domain taxonomy generator. Output valid JSON only."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.2,
+                max_tokens=2500
+            )
+            raw_text = response.choices[0].message.content.strip()
+
+            clean_text = re.sub(r"^```json\s*", "", raw_text, flags=re.MULTILINE)
+            clean_text = re.sub(r"^```\s*", "", clean_text, flags=re.MULTILINE)
+            clean_text = clean_text.strip()
+
+            data = json.loads(clean_text)
+            tables_result = data.get("tables", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+            
+            result_map = {item.get("table_name", "").lower(): item for item in tables_result if isinstance(item, dict)}
+            
+            final_results = []
+            for meta in meta_list:
+                tbl_name = meta['table_name']
+                cat_info = result_map.get(tbl_name.lower())
+                if not cat_info:
+                    cat_info = {
+                        "table_name": tbl_name,
+                        "category_name": "General Operations",
+                        "category_description": f"Auto-generated category for {tbl_name}",
+                        "category_keywords": [tbl_name.lower(), "data", "records"],
+                        "subcategory_name": f"{tbl_name} Management",
+                        "subcategory_description": f"Subcategory tracking for {tbl_name}",
+                        "subcategory_keywords": [tbl_name.lower(), "details", "list"]
+                    }
+                final_results.append((meta, cat_info))
+            return final_results
+
+        except Exception as e:
+            logger.error(f"Gemma API chunk error for {len(meta_list)} tables: {e}")
+            final_results = []
+            for meta in meta_list:
+                tbl_name = meta['table_name']
+                cat_info = {
+                    "table_name": tbl_name,
+                    "category_name": "General Operations",
+                    "category_description": f"Auto-generated category for {tbl_name}",
+                    "category_keywords": [tbl_name.lower(), "data", "records"],
+                    "subcategory_name": f"{tbl_name} Management",
+                    "subcategory_description": f"Subcategory tracking for {tbl_name}",
+                    "subcategory_keywords": [tbl_name.lower(), "details", "list"]
+                }
+                final_results.append((meta, cat_info))
+            return final_results
+
+    def scan_all_tables_chunked(self, chunk_size: int = 5, limit: int = None) -> list:
+        """
+        Step 2: Bulk scan across all database tables into Staging in CHUNKS of N tables per LLM call (default 5 tables per chunk).
+        Passes existing taxonomy dynamically from previous chunks to enforce category reuse and consolidation.
+        """
         self.ensure_staging_tables()
         tables = self.get_all_database_tables()
         if limit:
             tables = tables[:limit]
 
-        print(f"[START] [Step 2 Scanner] Starting sequential scan for {len(tables)} database tables into Staging...")
-        results = []
-        for idx, tbl in enumerate(tables, 1):
-            print(f"\n--- Processing Table {idx}/{len(tables)}: {tbl} ---")
-            try:
-                res = self.scan_single_table(tbl)
-                results.append(res)
-            except Exception as e:
-                logger.error(f"Failed scanning table {tbl}: {e}")
+        total_tables = len(tables)
+        print(f"[START] [Step 2 Scanner] Starting chunked scan for {total_tables} tables in chunks of {chunk_size} tables per LLM call...")
 
-        print(f"\n[DONE] [Step 2 Complete] Successfully scanned {len(results)} tables into Staging!")
+        table_chunks = [tables[i:i + chunk_size] for i in range(0, total_tables, chunk_size)]
+        
+        results = []
+        for chunk_idx, chunk_tables in enumerate(table_chunks, 1):
+            # Fetch current database taxonomy from previously staged/promoted chunks
+            existing_tax = self.get_existing_taxonomy()
+            cat_cnt = len(existing_tax['categories'])
+            sub_cnt = len(existing_tax['subcategories'])
+            
+            print(f"\n--- Processing Chunk {chunk_idx}/{len(table_chunks)} ({len(chunk_tables)} tables: {chunk_tables}) | Active Taxonomy: {cat_cnt} Cats, {sub_cnt} Subs ---")
+            
+            chunk_metadata = []
+            for tbl in chunk_tables:
+                print(f"[METADATA] Extracting columns & sample rows for: {tbl}")
+                meta = self.extract_table_metadata(tbl)
+                chunk_metadata.append(meta)
+
+            print(f"[GEMMA CHUNK] Sending {len(chunk_metadata)} tables to Gemma Gateway LLM (passing {cat_cnt} existing categories)...")
+            chunk_results = self.categorize_tables_chunk_with_gemma(chunk_metadata, existing_taxonomy=existing_tax)
+
+            for meta, cat_data in chunk_results:
+                tbl_name = meta['table_name']
+                self.insert_to_staging(tbl_name, cat_data)
+                results.append({
+                    "table_name": tbl_name,
+                    "metadata": meta,
+                    "staged_data": cat_data
+                })
+
+        print(f"\n[DONE] [Step 2 Complete] Successfully scanned {len(results)} tables into Staging across {len(table_chunks)} LLM chunk calls!")
         return results
+
+    def scan_all_tables_sequential(self, limit: int = None, chunk_size: int = 5) -> list:
+        """Step 2: Scan across all database tables into Staging in chunks of 5 tables per LLM call."""
+        return self.scan_all_tables_chunked(chunk_size=chunk_size, limit=limit)
 
 if __name__ == '__main__':
     import sys
@@ -274,15 +458,15 @@ if __name__ == '__main__':
     scanner.ensure_staging_tables()
     
     if len(sys.argv) > 1 and sys.argv[1] == '--all':
-        scanner.scan_all_tables_sequential()
+        scanner.scan_all_tables_chunked(chunk_size=5)
     elif len(sys.argv) > 1:
         tbl = sys.argv[1]
         scanner.scan_single_table(tbl)
     else:
-        # Default test on first available table
         all_tbls = scanner.get_all_database_tables()
         if all_tbls:
-            print(f"Testing Step 1 single-table scanner on: {all_tbls[0]}")
-            scanner.scan_single_table(all_tbls[0])
+            print(f"Testing Step 1 scanner on chunk of 5 tables...")
+            test_chunk = all_tbls[:5]
+            scanner.scan_all_tables_chunked(chunk_size=5, limit=5)
         else:
             print("No database tables found to scan.")
