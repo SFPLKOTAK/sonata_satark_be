@@ -487,19 +487,23 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
         self.cache_ttl = 3600  # Cache TTL in seconds (1 hour)
         self.cache_prefix = f"marklytix_search_{self.prompt_name.lower()}:"
         
-        # Load keywords from database to ensure fresh data from Marklytix_Categories & Subcategories
-        self.load_keywords_from_database()
-        self.search_tree = self.build_database_tree_with_prompts()
-        
-        HierarchicalSearchConsumer._category_keywords_db = self.category_keywords_db
-        HierarchicalSearchConsumer._subcategory_keywords_db = self.subcategory_keywords_db
-        HierarchicalSearchConsumer._search_tree = self.search_tree
-        HierarchicalSearchConsumer._keywords_loaded = True
-        print(f"Loaded hierarchical search configurations from DB ({len(self.category_keywords_db)} categories).")
+        # Check if already initialized at class level
+        if not getattr(HierarchicalSearchConsumer, '_keywords_loaded', False) or getattr(HierarchicalSearchConsumer, '_search_tree', None) is None:
+            self.load_keywords_from_database()
+            self.search_tree = self.build_database_tree_with_prompts()
             
-        # Initialize Chroma DB local persistent vector store
-        self._init_chroma_vector_store()
-
+            HierarchicalSearchConsumer._category_keywords_db = self.category_keywords_db
+            HierarchicalSearchConsumer._subcategory_keywords_db = self.subcategory_keywords_db
+            HierarchicalSearchConsumer._search_tree = self.search_tree
+            HierarchicalSearchConsumer._keywords_loaded = True
+            print(f"Loaded hierarchical search configurations from DB ({len(self.category_keywords_db)} categories).")
+                
+            # Initialize Chroma DB local persistent vector store
+            self._init_chroma_vector_store()
+        else:
+            self.category_keywords_db = getattr(HierarchicalSearchConsumer, '_category_keywords_db', {})
+            self.subcategory_keywords_db = getattr(HierarchicalSearchConsumer, '_subcategory_keywords_db', {})
+            self.search_tree = getattr(HierarchicalSearchConsumer, '_search_tree', None)
         
         # Initialize AI models
         self.get_model()
