@@ -15,6 +15,9 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 logger = logging.getLogger(__name__)
 
+# Suppress noisy sqlglot parser warnings for T-SQL procedural blocks
+logging.getLogger("sqlglot").setLevel(logging.ERROR)
+
 # Load .env file automatically
 base_dir = Path(__file__).resolve().parent.parent.parent
 load_dotenv(base_dir / '.env', override=True)
