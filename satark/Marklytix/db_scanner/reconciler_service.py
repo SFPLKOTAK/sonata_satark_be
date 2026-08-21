@@ -35,6 +35,63 @@ def deduplicate_keywords(keyword_sources: list) -> str:
 
     return ", ".join(unique_keywords)
 
+def detect_join_relationships(table_schemas: dict) -> str:
+    """
+    Analyzes table column schemas to find matching join keys (e.g. checklist_id = id, branch_id = branch_id)
+    and returns a formatted Markdown section listing explicit JOIN links.
+    """
+    tables = list(table_schemas.keys())
+    if len(tables) < 2:
+        return ""
+
+    join_links = []
+    seen_pairs = set()
+
+    for i in range(len(tables)):
+        for j in range(i + 1, len(tables)):
+            t1, t2 = tables[i], tables[j]
+            cols1 = {c['COLUMN_NAME'].lower(): c['COLUMN_NAME'] for c in table_schemas[t1]}
+            cols2 = {c['COLUMN_NAME'].lower(): c['COLUMN_NAME'] for c in table_schemas[t2]}
+
+            # 1. Exact Column Name Matches (e.g. branch_id = branch_id, audit_id = audit_id, checklist_id = checklist_id)
+            common_cols = set(cols1.keys()).intersection(set(cols2.keys()))
+            for col_lower in common_cols:
+                if col_lower in ['id', 'created_at', 'updated_at', 'status', 'last_modified_by']:
+                    continue
+                c1_name = cols1[col_lower]
+                c2_name = cols2[col_lower]
+                pair_key = tuple(sorted([f"{t1}.{c1_name}", f"{t2}.{c2_name}"]))
+                if pair_key not in seen_pairs:
+                    seen_pairs.add(pair_key)
+                    join_links.append(f"* `dbo.[{t1}]` JOIN `dbo.[{t2}]` ON `dbo.[{t1}].{c1_name}` = `dbo.[{t2}].{c2_name}`")
+
+            # 2. PK-FK Pattern Matches (e.g. t1.checklist_id = t2.id or t2.checklist_id = t1.id)
+            for c1_lower, c1_name in cols1.items():
+                if c1_lower.endswith('_id') or c1_lower.endswith('_code'):
+                    target_entity = c1_lower.rsplit('_', 1)[0]
+                    if 'id' in cols2 and (target_entity in t2.lower() or t2.lower().endswith(target_entity)):
+                        pair_key = tuple(sorted([f"{t1}.{c1_name}", f"{t2}.{cols2['id']}"]))
+                        if pair_key not in seen_pairs:
+                            seen_pairs.add(pair_key)
+                            join_links.append(f"* `dbo.[{t1}]` JOIN `dbo.[{t2}]` ON `dbo.[{t1}].{c1_name}` = `dbo.[{t2}].{cols2['id']}`")
+
+            for c2_lower, c2_name in cols2.items():
+                if c2_lower.endswith('_id') or c2_lower.endswith('_code'):
+                    target_entity = c2_lower.rsplit('_', 1)[0]
+                    if 'id' in cols1 and (target_entity in t1.lower() or t1.lower().endswith(target_entity)):
+                        pair_key = tuple(sorted([f"{t2}.{c2_name}", f"{t1}.{cols1['id']}"]))
+                        if pair_key not in seen_pairs:
+                            seen_pairs.add(pair_key)
+                            join_links.append(f"* `dbo.[{t2}]` JOIN `dbo.[{t1}]` ON `dbo.[{t2}].{c2_name}` = `dbo.[{t1}].{cols1['id']}`")
+
+    if not join_links:
+        return ""
+
+    links_str = "## TABLE JOIN RELATIONSHIPS (CRITICAL: Always use square brackets around table names e.g. dbo.[table_name]):\n"
+    links_str += "\n".join(join_links) + "\n\n"
+    return links_str
+
+
 def fetch_structured_column_schemas(conn, table_names: list) -> tuple:
     """
     Fetches exact column definitions for each table from INFORMATION_SCHEMA.COLUMNS.
@@ -72,8 +129,13 @@ def fetch_structured_column_schemas(conn, table_names: list) -> tuple:
         })
 
     bullet_str = ""
+    # Inject explicit Table Join Relationships if multiple tables exist
+    join_str = detect_join_relationships(table_schemas)
+    if join_str:
+        bullet_str += join_str
+
     for tbl, cols in table_schemas.items():
-        bullet_str += f"### TABLE: dbo.{tbl}\n"
+        bullet_str += f"### TABLE: dbo.[{tbl}]\n"
         for c in cols:
             bullet_str += f"* {c['COLUMN_NAME']} ({c['DATA_TYPE']})\n"
         bullet_str += "\n"
@@ -84,191 +146,98 @@ def fetch_structured_column_schemas(conn, table_names: list) -> tuple:
 def generate_15_pattern_master_prompt(conn, cat_name: str, sub_name: str, table_names: list) -> tuple:
     """
     Generates the master 15-pattern T-SQL system prompt and query templates
-    for subcategory prompts using exact INFORMATION_SCHEMA column schemas.
+    for subcategory prompts using exact INFORMATION_SCHEMA column schemas and multi-table JOIN patterns.
     """
     bullet_schema, table_schemas = fetch_structured_column_schemas(conn, table_names)
-    table_list_str = ", ".join([f"`dbo.{t}`" for t in sorted(table_names)]) if table_names else "`tables`"
-    primary_tbl = sorted(table_names)[0] if table_names else "primary_table"
+    sorted_tables = sorted(table_names)
+    table_list_str = ", ".join([f"`dbo.[{t}]`" for t in sorted_tables]) if sorted_tables else "`tables`"
+    primary_tbl = sorted_tables[0] if sorted_tables else "primary_table"
+    sec_tbl = sorted_tables[1] if len(sorted_tables) > 1 else primary_tbl
 
-    api_key = os.environ.get("GEMMA_API_KEY", "sk-Y82UGER7Dw97we65RxwfnjRsiWb1CFH0vBB_zqgszUk")
-    base_url = os.environ.get("GEMMA_BASE_URL", "http://43.242.226.49:8100/v1")
-    model_id = os.environ.get("GEMMA_MODEL_ID", "google/gemma-4-E4B-it")
+    prompt_content = f"""# Prompt You are a SQL Server expert. Your job is to create T-SQL queries for SQL Server. STRICTLY CONSIDER PREVIOUS QUESTIONS CONDITIONS AS WELL TO ANSWER CURRENT QUESTION. Create a SQL Server T-SQL query for the following user input, using the below instructions. Note: Ensure that the answers to each question are influenced by the conditions and results obtained from the preceding questions. STRICTLY USE ALL FOLLOWING CONDITIONS PRESENT IN BELOW QUESTIONS. Target source table: {table_list_str} STRICTLY Use only tables {table_list_str}. CRITICAL INSTRUCTION: ALWAYS ENCLOSE ALL SQL SERVER TABLE NAMES IN SQUARE BRACKETS e.g. dbo.[{primary_tbl}], especially when table names contain spaces or special characters! MULTI-TABLE INSTRUCTION: Whenever a user question asks for details spanning multiple tables, YOU MUST USE INNER JOIN or LEFT JOIN using the JOIN relationships listed below.
 
-    sys_prompt = (
-        "You are an expert SQL Server prompt engineer. Generate a comprehensive T-SQL generator system prompt "
-        "and 15 standard few-shot T-SQL question query templates based on the exact column schemas provided."
-    )
-
-    user_msg = f"""
-Target Category: {cat_name}
-Target Subcategory: {sub_name}
-Target Tables: {table_list_str}
-
-COMPLETE TABLE SCHEMAS (exact column names — use these only):
+COMPLETE TABLE SCHEMA (exact column names - use these only):
 {bullet_schema}
 
-INSTRUCTIONS:
-Generate a specialized system prompt following this EXACT format:
-
-# Prompt You are a SQL Server expert. Your job is to create T-SQL queries for SQL Server. STRICTLY CONSIDER PREVIOUS QUESTIONS CONDITIONS AS WELL TO ANSWER CURRENT QUESTION. Create a SQL Server T-SQL query for the following user input, using the below instructions. Note: Ensure that the answers to each question are influenced by the conditions and results obtained from the preceding questions. STRICTLY USE ALL FOLLOWING CONDITIONS PRESENT IN BELOW QUESTIONS. The user and the agent have done this conversation so far: STRICTLY MAKE QUERY FOR WHAT IS ASKED FOR NOTHING ELSE — DO NOT INCLUDE EXTRA INFORMATION. STRICTLY DO NOT GIVE ANY OTHER COLUMNS THAT ARE NOT BEING ASKED — GIVE ONLY THOSE THAT ARE ASKED. Target source table: {table_list_str} STRICTLY Use only tables {table_list_str}. 
-
-COMPLETE TABLE SCHEMA (exact column names — use these only): 
-{bullet_schema}
-
-STRICTLY DO NOT REFER ANY OUTSIDE TABLES OR DATA. STRICTLY REFER ONLY {table_list_str}. USE EXACT COLUMN NAMES AS SPECIFIED IN THE SCHEMA. Use T-SQL syntax for SQL Server. Use `TOP` instead of `LIMIT` for row limiting. Use proper data types in comparisons (integers for IDs, varchar for text). Always consider performance implications for large datasets. 
-
---- Provide T-SQL queries for the following list of questions. Each query must return only the columns explicitly requested for that question and nothing extra. Use clear, deterministic column naming in SELECT lists. Use GROUP BY when aggregating. Use ORDER BY when asked to sort. Use TOP when asked to limit rows. 
-
-Write 15 T-SQL query pattern examples (using exact columns from schema):
-1. FOR FINDING TOTAL RECORDS COUNT
-2. FOR LISTING TOP 10 ROWS
-3. FOR FINDING RECORDS BY SPECIFIC VALUE
-4. FOR FINDING RECORDS BY SPECIFIC ID
-5. FOR LISTING DISTINCT VALUES
-6. FOR COUNT OF RECORDS PER CATEGORY/GROUP
-7. FOR COUNT OF RECORDS PER SUB-CATEGORY/GROUP
-8. FOR LISTING RECORDS UNDER A SPECIFIC PARENT VALUE
-9. FOR TOP ITEMS BY COUNT
-10. FOR MAPPING ID TO ALL COLUMNS
-11. FOR FINDING GROUPS WITH MULTIPLE SUB-GROUPS
-12. FOR FINDING MULTIPLE SUB-ENTRIES IN SAME GROUP
-13. FOR FINDING RECORDS WHERE NAME CONTAINS A KEYWORD
-14. FOR FINDING SUB-GROUPS COVERED IN A GROUP
-15. FOR PAGINATED LIST
-
---- ADDITIONAL RULES / NOTES: 
-* Each SQL answer you produce must correspond to one of the numbered questions above and must return **only** the columns requested for that question. Do not add extra columns. 
-* Use `COUNT(*)`, `COUNT(<column>)`, `COUNT(DISTINCT ...)`, `GROUP BY`, `HAVING`, `ORDER BY`, `TOP` as appropriate. 
-* Use parameter placeholders or literal examples as shown. 
-* If filtering by text, use `=` for exact match or `LIKE '%keyword%'` for contains. 
-* For any aggregation include the grouping columns explicitly in `GROUP BY`. 
-* Do not perform data-modifying operations (no `INSERT`, `UPDATE`, `DELETE`). Only `SELECT` queries are allowed.
-
-Return JSON object:
-{{
-  "prompt_content": "...",
-  "query_patterns": "..."
-}}
-"""
-
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key, base_url=base_url)
-        response = client.chat.completions.create(
-            model=model_id,
-            messages=[
-                {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": user_msg}
-            ],
-            temperature=0.2,
-            max_tokens=3000
-        )
-        ai_text = response.choices[0].message.content.strip()
-
-        prompt_content = ai_text
-        query_patterns = ""
-
-        if "```json" in ai_text:
-            json_str = ai_text.split("```json")[1].split("```")[0].strip()
-            try:
-                parsed = json.loads(json_str)
-                prompt_content = parsed.get("prompt_content", ai_text)
-                query_patterns = parsed.get("query_patterns", "")
-            except Exception:
-                pass
-        elif ai_text.startswith("{") and ai_text.endswith("}"):
-            try:
-                parsed = json.loads(ai_text)
-                prompt_content = parsed.get("prompt_content", ai_text)
-                query_patterns = parsed.get("query_patterns", "")
-            except Exception:
-                pass
-
-    except Exception as e:
-        logger.warning(f"Gateway AI call failed during prompt enrichment: {e}")
-        prompt_content = f"""# Prompt You are a SQL Server expert. Your job is to create T-SQL queries for SQL Server. STRICTLY CONSIDER PREVIOUS QUESTIONS CONDITIONS AS WELL TO ANSWER CURRENT QUESTION. Create a SQL Server T-SQL query for the following user input, using the below instructions. Note: Ensure that the answers to each question are influenced by the conditions and results obtained from the preceding questions. STRICTLY USE ALL FOLLOWING CONDITIONS PRESENT IN BELOW QUESTIONS. The user and the agent have done this conversation so far: STRICTLY MAKE QUERY FOR WHAT IS ASKED FOR NOTHING ELSE — DO NOT INCLUDE EXTRA INFORMATION. STRICTLY DO NOT GIVE ANY OTHER COLUMNS THAT ARE NOT BEING ASKED — GIVE ONLY THOSE THAT ARE ASKED. Target source table: {table_list_str} STRICTLY Use only table {table_list_str}.
-
-COMPLETE TABLE SCHEMA (exact column names — use these only):
-{bullet_schema}
-
-STRICTLY DO NOT REFER ANY OUTSIDE TABLES OR DATA. STRICTLY REFER ONLY {table_list_str}. USE EXACT COLUMN NAMES AS SPECIFIED IN THE SCHEMA. Use T-SQL syntax for SQL Server. Use `TOP` instead of `LIMIT` for row limiting. Use proper data types in comparisons (integers for IDs, varchar for text). Always consider performance implications for large datasets.
+STRICTLY DO NOT REFER ANY OUTSIDE TABLES OR DATA. STRICTLY REFER ONLY {table_list_str}. USE EXACT COLUMN NAMES AS SPECIFIED IN THE SCHEMA. Use T-SQL syntax for SQL Server. ALWAYS USE SQUARE BRACKETS FOR TABLE NAMES: `dbo.[table_name]`. Use `TOP` instead of `LIMIT` for row limiting. Use proper data types in comparisons (integers for IDs, varchar for text). Always consider performance implications for large datasets.
 
 --- Provide T-SQL queries for the following list of questions. Each query must return only the columns explicitly requested for that question and nothing extra. Use clear, deterministic column naming in SELECT lists. Use GROUP BY when aggregating. Use ORDER BY when asked to sort. Use TOP when asked to limit rows.
 
 1. FOR FINDING TOTAL RECORDS COUNT:
 ```sql
-SELECT COUNT(*) AS TotalRecords FROM {primary_tbl};
+SELECT COUNT(*) AS TotalRecords FROM dbo.[{primary_tbl}];
 ```
 
 2. FOR LISTING TOP 10 ROWS (same columns as table):
 ```sql
-SELECT TOP (10) * FROM {primary_tbl};
+SELECT TOP (10) * FROM dbo.[{primary_tbl}];
 ```
 
 3. FOR FINDING RECORDS BY SPECIFIC VALUE:
 ```sql
-SELECT TOP (100) * FROM {primary_tbl} WHERE status = 'Completed';
+SELECT TOP (100) * FROM dbo.[{primary_tbl}] WHERE status = 'Completed';
 ```
 
 4. FOR FINDING RECORDS BY SPECIFIC ID:
 ```sql
-SELECT TOP (100) * FROM {primary_tbl} WHERE id = 1;
+SELECT TOP (100) * FROM dbo.[{primary_tbl}] WHERE id = 1;
 ```
 
 5. FOR LISTING DISTINCT VALUES:
 ```sql
-SELECT DISTINCT section_name FROM {primary_tbl} ORDER BY section_name;
+SELECT DISTINCT section_name FROM dbo.[{primary_tbl}] ORDER BY section_name;
 ```
 
 6. FOR COUNT OF RECORDS PER CATEGORY/GROUP:
 ```sql
-SELECT section_name, COUNT(*) AS RecordCount FROM {primary_tbl} GROUP BY section_name ORDER BY RecordCount DESC;
+SELECT section_name, COUNT(*) AS RecordCount FROM dbo.[{primary_tbl}] GROUP BY section_name ORDER BY RecordCount DESC;
 ```
 
 7. FOR COUNT OF RECORDS PER SUB-CATEGORY/GROUP:
 ```sql
-SELECT branch_id, section_name, COUNT(id) AS ItemCount FROM {primary_tbl} GROUP BY branch_id, section_name ORDER BY ItemCount DESC;
+SELECT branch_id, section_name, COUNT(id) AS ItemCount FROM dbo.[{primary_tbl}] GROUP BY branch_id, section_name ORDER BY ItemCount DESC;
 ```
 
 8. FOR LISTING RECORDS UNDER A SPECIFIC PARENT VALUE:
 ```sql
-SELECT id, section_name FROM {primary_tbl} WHERE branch_id = '248' ORDER BY section_name;
+SELECT id, section_name FROM dbo.[{primary_tbl}] WHERE branch_id = '248' ORDER BY section_name;
 ```
 
 9. FOR TOP ITEMS BY COUNT:
 ```sql
-SELECT TOP (10) branch_id, COUNT(id) AS ItemCount FROM {primary_tbl} GROUP BY branch_id ORDER BY ItemCount DESC;
+SELECT TOP (10) branch_id, COUNT(id) AS ItemCount FROM dbo.[{primary_tbl}] GROUP BY branch_id ORDER BY ItemCount DESC;
 ```
 
 10. FOR MAPPING ID TO ALL COLUMNS:
 ```sql
-SELECT * FROM {primary_tbl} WHERE id = 1;
+SELECT * FROM dbo.[{primary_tbl}] WHERE id = 1;
 ```
 
 11. FOR FINDING GROUPS WITH MULTIPLE SUB-GROUPS:
 ```sql
-SELECT branch_id, COUNT(DISTINCT checklist_id) AS DistinctCount FROM {primary_tbl} GROUP BY branch_id HAVING COUNT(DISTINCT checklist_id) > 1 ORDER BY DistinctCount DESC;
+SELECT branch_id, COUNT(DISTINCT checklist_id) AS DistinctCount FROM dbo.[{primary_tbl}] GROUP BY branch_id HAVING COUNT(DISTINCT checklist_id) > 1 ORDER BY DistinctCount DESC;
 ```
 
 12. FOR FINDING MULTIPLE SUB-ENTRIES IN SAME GROUP:
 ```sql
-SELECT branch_id, checklist_id, COUNT(*) AS RecordCount FROM {primary_tbl} GROUP BY branch_id, checklist_id HAVING COUNT(*) > 1 ORDER BY RecordCount DESC;
+SELECT branch_id, checklist_id, COUNT(*) AS RecordCount FROM dbo.[{primary_tbl}] GROUP BY branch_id, checklist_id HAVING COUNT(*) > 1 ORDER BY RecordCount DESC;
 ```
 
-13. FOR FINDING RECORDS WHERE NAME CONTAINS A KEYWORD:
+13. FOR MULTI-TABLE INNER JOIN DETAILS:
 ```sql
-SELECT id, section_name FROM {primary_tbl} WHERE section_name LIKE '%Audit%' ORDER BY section_name;
+SELECT t1.id, t1.branch_id, t2.section_name, t1.answer FROM dbo.[{primary_tbl}] t1 INNER JOIN dbo.[{sec_tbl}] t2 ON t1.checklist_id = t2.checklist_id WHERE t1.branch_id = '248';
 ```
 
-14. FOR FINDING SUB-GROUPS COVERED IN A GROUP:
+14. FOR MULTI-TABLE AGGREGATION JOIN:
 ```sql
-SELECT DISTINCT checklist_id, section_name FROM {primary_tbl} WHERE branch_id = '248';
+SELECT t2.section_name, COUNT(t1.id) AS TotalCount FROM dbo.[{sec_tbl}] t2 LEFT JOIN dbo.[{primary_tbl}] t1 ON t2.checklist_id = t1.checklist_id GROUP BY t2.section_name ORDER BY TotalCount DESC;
 ```
 
-15. FOR PAGINATED LIST:
+15. FOR MULTI-TABLE FILTERED AND PAGINATED LIST:
 ```sql
-SELECT id, section_name FROM {primary_tbl} ORDER BY id OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY;
+SELECT t1.id, t1.branch_id, t2.section_name FROM dbo.[{primary_tbl}] t1 INNER JOIN dbo.[{sec_tbl}] t2 ON t1.checklist_id = t2.checklist_id WHERE t2.section_code = 'OPERATIONAL' ORDER BY t1.id OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY;
 ```
+
 
 --- ADDITIONAL RULES / NOTES:
 * Each SQL answer you produce must correspond to one of the numbered questions above and must return **only** the columns requested for that question. Do not add extra columns.
@@ -278,9 +247,10 @@ SELECT id, section_name FROM {primary_tbl} ORDER BY id OFFSET 0 ROWS FETCH NEXT 
 * For any aggregation include the grouping columns explicitly in `GROUP BY`.
 * Do not perform data-modifying operations (no `INSERT`, `UPDATE`, `DELETE`). Only `SELECT` queries are allowed.
 """
-        query_patterns = f"-- FEW-SHOT T-SQL QUERY EXAMPLES\n\nSELECT TOP 100 * FROM {primary_tbl};"
+    query_patterns = f"-- FEW-SHOT T-SQL QUERY EXAMPLES\n\nSELECT TOP 100 * FROM dbo.{primary_tbl};"
 
     return prompt_content, query_patterns
+
 
 
 class MarklytixReconciler:
@@ -586,6 +556,17 @@ class MarklytixReconciler:
             conn.execute(text("UPDATE dbo.Marklytix_Staging_Subcategories SET ScanStatus = 'PROMOTED' WHERE ScanStatus = 'STAGED'"))
 
         print(f"\n[DONE] [Step 3 Reconciliation Complete] Promoted {promoted_cats_count} Categories and {promoted_subs_count} Subcategories to main production tables!")
+
+        # Auto-refresh ChromaDB vector store
+        try:
+            try:
+                from .refresh_chroma_db import refresh_chroma_db
+            except ImportError:
+                from refresh_chroma_db import refresh_chroma_db
+            refresh_chroma_db()
+        except Exception as e_chroma:
+            print(f"⚠️ Notice: Auto ChromaDB refresh: {e_chroma}")
+
         return {
             "categories_promoted": promoted_cats_count,
             "subcategories_promoted": promoted_subs_count
@@ -594,3 +575,4 @@ class MarklytixReconciler:
 if __name__ == '__main__':
     reconciler = MarklytixReconciler()
     reconciler.reconcile_staged_data()
+

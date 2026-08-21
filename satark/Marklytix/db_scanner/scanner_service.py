@@ -2,11 +2,24 @@ import os
 import json
 import re
 import logging
+import sys
 from pathlib import Path
 from urllib.parse import quote_plus
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from openai import OpenAI
+
+# Ensure current directory is in sys.path for direct script execution
+db_scanner_dir = Path(__file__).resolve().parent
+if str(db_scanner_dir) not in sys.path:
+    sys.path.insert(0, str(db_scanner_dir))
+
+try:
+    from .graph_extractor import MarklytixGraphExtractor
+except Exception:
+    from graph_extractor import MarklytixGraphExtractor
+
+
 
 logger = logging.getLogger(__name__)
 
@@ -294,7 +307,7 @@ EXISTING SYSTEM TAXONOMY IN DATABASE:
 STRICT CONSTRAINTS FOR CATEGORIZATION:
 1. MANDATORY REUSE: Examine the Existing Categories and Existing Subcategories above. If a table logically belongs to any existing Category or Subcategory, YOU MUST REUSE IT EXACTLY (same case and spelling).
 2. DO NOT CREATE NEW CATEGORIES UNLESS NECESSARY: Only create a new category or subcategory if a table cannot fit into ANY existing category.
-3. CONSOLIDATION TARGET: Aim for a concise total taxonomy (~10 broad Categories and ~20 Subcategories across the entire database, averaging ~5 tables per subcategory). Group related tables together.
+3. TAXONOMY STRUCTURAL RATIO CONSTRAINT: Maintain a strict taxonomy ratio across the database: Average ~5 tables per Subcategory, and ~3 Subcategories per Category (~15 tables per Category total). MANDATORY: Tables in this prompt chunk belong to the SAME subcategory cluster and MUST be assigned to the SAME Category and SAME Subcategory unless a table is completely unrelated.
 """
 
         tables_prompt_block = ""
@@ -403,6 +416,129 @@ Return a JSON object containing a "tables" array with exactly {len(meta_list)} o
                 final_results.append((meta, cat_info))
             return final_results
 
+    def categorize_graph_cluster_with_gemma(self, meta_list: list, sp_context: str = "", existing_category_name: str = None) -> tuple:
+        """
+        Classifies an entire graph subcategory cluster of related tables at once.
+        Ensures all member tables in this cluster share:
+          1. The Category Name (reusing existing_category_name if provided for this Category group)
+          2. A distinct Subcategory Name created specifically for this subcategory cluster
+        """
+        if not meta_list:
+            return [], existing_category_name or "General Operations"
+
+        tables_prompt_block = ""
+        for idx, meta in enumerate(meta_list, 1):
+            cols_list = [f"{c['name']} ({c['type']})" for c in meta['columns'][:20]]
+            if len(meta['columns']) > 20:
+                cols_list.append(f"... +{len(meta['columns'])-20} more columns")
+            cols_str = ", ".join(cols_list)
+            fks_str = ", ".join([f"{fk['column']} -> {fk['referenced_table']}" for fk in meta['foreign_keys']]) or "None"
+            
+            sample_brief = []
+            if meta.get('sample_rows'):
+                for row in meta['sample_rows'][:1]:
+                    clean_row = {}
+                    for k, v in list(row.items())[:10]:
+                        val_str = str(v) if v is not None else ""
+                        clean_row[k] = (val_str[:30] + '...') if len(val_str) > 30 else val_str
+                    sample_brief.append(clean_row)
+            samples_str = json.dumps(sample_brief) if sample_brief else "No data"
+
+            tables_prompt_block += f"""
+--- TABLE {idx}: "{meta['table_name']}" ---
+Columns: {cols_str}
+Foreign Keys: {fks_str}
+Sample: {samples_str}
+"""
+
+        cat_instruction = f'MUST use Category Name: "{existing_category_name}"' if existing_category_name else 'Generate a broad Category Name for this functional area.'
+
+        prompt = f"""
+You are a database domain expert. Analyze the following {len(meta_list)} related SQL Server tables and their associated stored procedure context.
+These tables have been mathematically clustered together into a single business Subcategory.
+
+ASSOCIATED STORED PROCEDURES CONTEXT:
+{sp_context}
+
+TABLES IN THIS SUBCATEGORY CLUSTER:
+{tables_prompt_block}
+
+INSTRUCTIONS:
+1. All {len(meta_list)} tables in this cluster belong to the SAME Subcategory.
+2. {cat_instruction}
+3. Generate a distinct, specific Subcategory Name that precisely describes what this group of tables tracks.
+4. Generate 10-15 search keywords for the category and subcategory.
+
+Respond strictly in valid JSON format:
+{{
+  "category_name": "Broad Category Name",
+  "category_description": "Short description of the business category",
+  "category_keywords": ["10 to 15 search keywords for this category"],
+  "subcategory_name": "Specific Subcategory Name for this group of tables",
+  "subcategory_description": "Short description of this subcategory",
+  "subcategory_keywords": ["10 to 15 search keywords for this subcategory and its tables"]
+}}
+"""
+        try:
+            prompt_len = len(prompt)
+            approx_tokens = int(prompt_len / 4)
+            print(f"📏 [GEMMA PROMPT METRICS] Cluster Prompt Size: {prompt_len:,} chars | ~{approx_tokens:,} tokens")
+
+            response = self.llm_client.chat.completions.create(
+
+                model=self.gemma_model_id,
+                messages=[
+                    {"role": "system", "content": "You are a precise database domain taxonomy generator. Output valid JSON only."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.2,
+                max_tokens=1500
+            )
+            raw_text = response.choices[0].message.content.strip()
+            clean_text = re.sub(r"^```json\s*", "", raw_text, flags=re.MULTILINE)
+            clean_text = re.sub(r"^```\s*", "", clean_text, flags=re.MULTILINE).strip()
+
+            parsed = json.loads(clean_text)
+            
+            cat_name = existing_category_name or parsed.get("category_name", "General Operations")
+            cat_desc = parsed.get("category_description", "")
+            cat_kw = parsed.get("category_keywords", [])
+            sub_name = parsed.get("subcategory_name", f"{meta_list[0]['table_name']} Group")
+            sub_desc = parsed.get("subcategory_description", "")
+            sub_kw = parsed.get("subcategory_keywords", [])
+
+            final_results = []
+            for meta in meta_list:
+                cat_info = {
+                    "table_name": meta['table_name'],
+                    "category_name": cat_name,
+                    "category_description": cat_desc,
+                    "category_keywords": cat_kw,
+                    "subcategory_name": sub_name,
+                    "subcategory_description": sub_desc,
+                    "subcategory_keywords": sub_kw
+                }
+                final_results.append((meta, cat_info))
+            return final_results, cat_name
+
+        except Exception as e:
+            logger.error(f"Gemma API graph cluster error: {e}")
+            cat_name = existing_category_name or "General Operations"
+            sub_name = f"{meta_list[0]['table_name']} Management"
+            final_results = []
+            for meta in meta_list:
+                cat_info = {
+                    "table_name": meta['table_name'],
+                    "category_name": cat_name,
+                    "category_description": f"Auto-generated category for {meta['table_name']}",
+                    "category_keywords": [meta['table_name'].lower()],
+                    "subcategory_name": sub_name,
+                    "subcategory_description": f"Subcategory tracking for {meta['table_name']}",
+                    "subcategory_keywords": [meta['table_name'].lower()]
+                }
+                final_results.append((meta, cat_info))
+            return final_results, cat_name
+
     def scan_all_tables_chunked(self, chunk_size: int = 5, limit: int = None) -> list:
         """
         Step 2: Bulk scan across all database tables into Staging in CHUNKS of N tables per LLM call (default 5 tables per chunk).
@@ -452,12 +588,88 @@ Return a JSON object containing a "tables" array with exactly {len(meta_list)} o
         """Step 2: Scan across all database tables into Staging in chunks of 5 tables per LLM call."""
         return self.scan_all_tables_chunked(chunk_size=chunk_size, limit=limit)
 
+    def scan_all_tables_with_multi_signal_graph(self, limit: int = None) -> list:
+        """
+        Step 2 Advanced: Multi-Signal Knowledge Graph Scan with Hierarchical Ratio Constraints.
+        1. Fuses Stored Procedures (AST), Foreign Keys, Indexes, Shared Column Heuristics, 
+           and TF-IDF Schema Vectors into a weighted NetworkX Graph.
+        2. Applies 2-Level Hierarchical Louvain Partitioning enforcing:
+           - ~5 tables per Subcategory
+           - ~3 Subcategories per Category (~15 tables per Category total)
+        3. For each subcategory cluster of related tables, calls Gemma Gateway LLM to generate candidate 
+           Categories, Subcategories, and Keywords.
+        4. Inserts candidates into staging tables.
+        """
+        self.ensure_staging_tables()
+        print("[START] [Multi-Signal Knowledge Graph Scanner] Building database dependency graph & hierarchical clusters...")
+        
+        extractor = MarklytixGraphExtractor(engine=self.engine)
+        hierarchical_clusters = extractor.partition_into_hierarchical_taxonomy_clusters(target_tables_per_subcat=5, target_subcats_per_cat=3)
+
+        if not hierarchical_clusters:
+            print("[WARN] No hierarchical table clusters generated by graph extractor.")
+            return []
+
+        sp_map, _ = extractor.extract_stored_procedures()
+
+        results = []
+        total_categories = len(hierarchical_clusters)
+        
+        total_subcats = sum(len(cat_info["subcategories"]) for cat_info in hierarchical_clusters.values())
+        print(f"[HIERARCHICAL SCAN] Processing {total_categories} Category groups split into {total_subcats} Subcategory clusters...")
+
+        for cat_id, cat_info in hierarchical_clusters.items():
+            subcat_list = cat_info["subcategories"]
+            category_name_for_cluster = None  # Will be set by first subcategory in this Category Cluster
+
+            for sc_idx, tbl_list in enumerate(subcat_list, 1):
+                if limit and len(results) >= limit:
+                    break
+
+                print(f"\n--- Category Cluster {cat_id} | Subcategory {sc_idx}/{len(subcat_list)} ({len(tbl_list)} tables: {tbl_list}) ---")
+
+                cluster_meta = []
+                for tbl in tbl_list:
+                    meta = self.extract_table_metadata(tbl)
+                    cluster_meta.append(meta)
+
+                # Find SPs associated with these cluster tables
+                associated_sps = set()
+                for sp_name, sp_tbls in sp_map.items():
+                    if any(t.lower() in [x.lower() for x in tbl_list] for t in sp_tbls):
+                        associated_sps.add(sp_name)
+                
+                sp_context_str = f"Associated Stored Procedures: {', '.join(sorted(list(associated_sps)))}" if associated_sps else "No Stored Procedures touch these tables directly."
+                print(f"[SP CONTEXT] {sp_context_str}")
+
+                print(f"[GEMMA GRAPH CLUSTER] Classifying subcategory cluster with Gemma Gateway LLM...")
+                cluster_results, category_name_for_cluster = self.categorize_graph_cluster_with_gemma(
+                    cluster_meta, 
+                    sp_context=sp_context_str, 
+                    existing_category_name=category_name_for_cluster
+                )
+
+                for meta, cat_data in cluster_results:
+                    tbl_name = meta['table_name']
+                    self.insert_to_staging(tbl_name, cat_data)
+                    results.append({
+                        "table_name": tbl_name,
+                        "metadata": meta,
+                        "staged_data": cat_data
+                    })
+
+        print(f"\n[DONE] [Hierarchical Graph Scan Complete] Scanned {len(results)} tables into Staging across {total_categories} Categories and {total_subcats} Subcategories!")
+        return results
+
+
 if __name__ == '__main__':
     import sys
     scanner = MarklytixStagingScanner()
     scanner.ensure_staging_tables()
     
-    if len(sys.argv) > 1 and sys.argv[1] == '--all':
+    if len(sys.argv) > 1 and sys.argv[1] in ['--all', '--graph']:
+        scanner.scan_all_tables_with_multi_signal_graph()
+    elif len(sys.argv) > 1 and sys.argv[1] == '--chunked':
         scanner.scan_all_tables_chunked(chunk_size=5)
     elif len(sys.argv) > 1:
         tbl = sys.argv[1]
@@ -465,8 +677,8 @@ if __name__ == '__main__':
     else:
         all_tbls = scanner.get_all_database_tables()
         if all_tbls:
-            print(f"Testing Step 1 scanner on chunk of 5 tables...")
-            test_chunk = all_tbls[:5]
-            scanner.scan_all_tables_chunked(chunk_size=5, limit=5)
+            print(f"Testing Multi-Signal Graph Scanner on database tables...")
+            scanner.scan_all_tables_with_multi_signal_graph(limit=5)
         else:
             print("No database tables found to scan.")
+
