@@ -1,0 +1,179 @@
+Using the LLM Gateway
+An OpenAI-compatible endpoint with text, voice-out and voice-in. Everything you need to send your first request.
+
+🚀
+Getting started
+The gateway speaks the OpenAI REST API. If you already have code that talks to OpenAI, point it here by changing two things: the base URL and the API key.
+
+Base URL
+Copy
+http://<host>:8100/v1
+Authentication
+Every inference request needs a gateway client key (starts with sk-), issued from the dashboard. Send it as a Bearer token:
+
+Copy
+Authorization: Bearer sk-YOUR-CLIENT-KEY
+A query param ?api_key=sk-... is also accepted (used by the WebSocket path). Keys are per-client, can be enabled/disabled, and every request is usage-accounted.
+
+🔑
+Need a key? An operator creates one under any client via the dashboard API (POST /dashboard/api/clients), which returns {"api_key": "sk-..."}. Ask your admin, or create one if you have dashboard access.
+💬
+Text chat
+POST /v1/chat/completions
+
+The core endpoint. Send a list of messages, get a reply. Identical to OpenAI chat completions — standard fields (temperature, top_p, max_tokens, stop, …) pass straight through to the model.
+
+Non-streaming request
+cURL
+Python
+JavaScript
+Copy
+curl -s http://<host>:8100/v1/chat/completions \
+  -H "Authorization: Bearer sk-YOUR-CLIENT-KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "model": "google/gemma-4-E4B-it",
+        "messages": [
+          {"role": "user", "content": "Say hello in one sentence."}
+        ],
+        "max_tokens": 64
+      }'
+Response
+Copy
+{
+  "id": "chatcmpl-abc",
+  "object": "chat.completion",
+  "model": "google/gemma-4-E4B-it",
+  "choices": [
+    {"index": 0,
+     "message": {"role": "assistant", "content": "Hello there!"},
+     "finish_reason": "stop"}
+  ],
+  "usage": {"prompt_tokens": 23, "completion_tokens": 3, "total_tokens": 26,
+            "prompt_tokens_details": {"cached_tokens": 16}}
+}
+cached_tokens is how many prompt tokens were served from the prefix cache — reuse a stable system prompt and set a session_id to keep this high and latency low.
+
+Streaming (SSE)
+Add "stream": true. You get text/event-stream chunks; the final chunk always carries usage, terminated by data: [DONE].
+
+cURL
+Python
+Copy
+curl -N http://<host>:8100/v1/chat/completions \
+  -H "Authorization: Bearer sk-YOUR-CLIENT-KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"google/gemma-4-E4B-it",
+       "messages":[{"role":"user","content":"Count to three."}],
+       "stream":true}'
+⏳
+Streaming requests have a 60-second deadline. If the model exceeds it you receive a timeout frame then [DONE]. Requests with max_tokens > 500 are treated as long "summary" jobs and are queued behind a concurrency gate.
+🔊
+Voice-out (audio output)
+Ask the model to speak. Add "modalities": ["text","audio"] (or "audio_output": true). The gateway generates a structured {emotion, tone, text} reply and synthesizes speech per sentence with Parler-TTS.
+
+Copy
+curl -s http://<host>:8100/v1/chat/completions \
+  -H "Authorization: Bearer sk-YOUR-CLIENT-KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "model": "google/gemma-4-E4B-it",
+        "messages": [{"role":"user","content":"Reassure a worried customer."}],
+        "modalities": ["text","audio"]
+      }'
+Response — the message gains emotion, tone, audio
+Copy
+{
+  "choices": [{"message": {
+    "role": "assistant",
+    "content": "I completely understand, and we'll fix this for you.",
+    "emotion": "empathetic",
+    "tone": {"speaking_rate": 1.0, "pitch_style": "warm", "energy": 0.5},
+    "audio": {"id": "audio-...", "data": "<base64 WAV>", "format": "wav",
+              "sample_rate": 44100, "transcript": "I completely understand..."}
+  }, "finish_reason": "stop"}]
+}
+Decode audio.data from base64 to get a playable WAV. When streaming, you get a one-off delta.emotion chunk followed by per-sentence delta.audio chunks ({data, format, index, transcript}) interleaved with text deltas — play them as they arrive.
+
+Emotion register
+The model picks one emotion that fits the user's words (and vocal tone, if audio was sent):
+
+neutral
+happy
+empathetic
+apologetic
+urgent
+reassuring
+professional
+tone — how it's spoken
+Field	Range	Meaning
+speaking_rate	0.8 – 1.3	0.8 slow → 1.3 fast (default 1.0)
+pitch_style	warm | authoritative | gentle	Voice character (default warm)
+energy	0.0 – 1.0	0.0 calm → 1.0 energetic (default 0.5)
+🎤
+Voice-in (audio input)
+Send audio to the model. Put an audio_url data-URI in the message content alongside your text instruction. The multimodal model ingests roughly the first 30 seconds of a clip.
+
+Copy
+{
+  "model": "google/gemma-4-E4B-it",
+  "messages": [{
+    "role": "user",
+    "content": [
+      {"type": "audio_url",
+       "audio_url": {"url": "data:audio/wav;base64,<BASE64_AUDIO>"}},
+      {"type": "text", "text": "Transcribe this and summarise the caller's issue."}
+    ]
+  }]
+}
+To build the data-URI in Python:
+
+Copy
+import base64
+b64 = base64.b64encode(open("call.wav", "rb").read()).decode()
+url = f"data:audio/wav;base64,{b64}"
+💡
+Full duplex: combine voice-in and voice-out in one request — send an audio_url and set "modalities": ["text","audio"] to get a spoken, emotion-aware reply to a spoken question.
+🔌
+WebSocket (live conversation)
+WS /v1/chat?api_key=sk-...&session_id=...
+
+For low-latency, multi-turn voice/text sessions the gateway proxies a WebSocket to the conversation bridge. Authenticate with the api_key query param (the socket closes with code 4001 if it's invalid).
+
+Client → server messages
+type	Fields	Effect
+send_message	content, audio (b64), audio_format, response_mode	Run one turn; streams frames back
+set_context	system_prompt, model, response_mode	Update session → context_updated
+reset	—	Clear history → reset_ack
+Server → client frames
+ready content / text_delta emotion audio_chunk audio_done turn_complete error
+
+⚙️
+Parameters
+Standard OpenAI sampling fields (temperature, top_p, stop, frequency_penalty, presence_penalty, n, logprobs…) pass through verbatim. The HTTP path injects no sampling defaults — vLLM's defaults apply for anything you omit. Gateway-specific extras:
+
+Field	Default	Notes
+max_tokens	—	Values > 500 flag the request as a queued "summary" job
+stream	false	true → SSE; final chunk includes usage
+session_id	—	Also as X-Session-ID; drives cache/routing affinity
+modalities / audio_output	—	["audio"] / true → voice-out path
+summary	false	Gateway-only; force the summary queue. Stripped before vLLM
+priority	false	Gateway-only; parsed and stripped before vLLM
+The gateway also injects a date/calendar block into the system message and forces include_usage on streams. Non-OpenAI fields above are stripped before forwarding.
+
+🛑
+Status & error codes
+Code	When
+200	Success (a proxied non-200 from vLLM is passed through as-is)
+400	context_length_exceeded — conversation too long; start a new session or trim history
+401	Missing or invalid API key
+403	API key disabled
+502	Upstream failure on the audio path
+504	Request timeout (no response within 60s)
+4001	WebSocket close: invalid API key
+Context-length error body
+Copy
+{"error": {
+  "message": "Conversation too long: your prompt exceeds the model's context limit...",
+  "type": "context_length_exceeded", "code": 400
+}}

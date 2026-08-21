@@ -42,6 +42,7 @@ INSTALLED_APPS = [
     'authentication',
     'planner',
     'audit',
+    'loan_opportunity',
 ]
 
 MIDDLEWARE = [
