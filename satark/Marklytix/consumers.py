@@ -897,6 +897,7 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
                     'method': table_result['method'],
                     'reasoning': table_result['reasoning'],
                     'prompt_used': table_result.get('prompt_used', 'N/A'),
+                    'final_generated_prompt': table_result.get('final_generated_prompt', table_result.get('prompt_used', 'N/A')),
                     'time_taken': (end_time_3 - start_time_3).total_seconds()
                 },
                 'level_4_execution': {
@@ -1410,6 +1411,28 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
             try:
                 from django.db import connection
                 with connection.cursor() as cursor:
+                    # A. Fetch table documentation metadata if available
+                    table_doc_map = {}
+                    try:
+                        cursor.execute("""
+                            SELECT TableName, TablePurpose, ConnectedTables, ColumnMeanings, RawSchema, LouvainClusterId
+                            FROM dbo.Marklytix_TableDocumentation
+                        """)
+                        for d_row in cursor.fetchall():
+                            tbl_name_raw = d_row[0] or ""
+                            if tbl_name_raw:
+                                table_doc_map[tbl_name_raw.strip().lower()] = {
+                                    "TableName": tbl_name_raw.strip(),
+                                    "TablePurpose": d_row[1] or "",
+                                    "ConnectedTables": d_row[2] or "",
+                                    "ColumnMeanings": d_row[3] or "",
+                                    "RawSchema": d_row[4] or "",
+                                    "LouvainClusterId": d_row[5]
+                                }
+                    except Exception as e_tdoc:
+                        print(f"⚠️ [ChromaDB Auto-Syncer] Marklytix_TableDocumentation fetch warning: {e_tdoc}")
+
+                    # B. Fetch subcategory prompt mapping
                     cursor.execute("""
                         SELECT Category, Subcategory, Table_List, PromptContent 
                         FROM dbo.Marklytix_SubcategoryPrompts 
@@ -1432,43 +1455,145 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
                             else:
                                 table_schemas_map[t_name]["prompt_snippets"].append(prompt_content[:300])
 
+                    all_table_names = list(set(table_schemas_map.keys()) | set(table_doc_map.keys()))
+
                     t_ids, t_docs, t_metas = [], [], []
-                    for t_name, info in table_schemas_map.items():
-                        cols = []
-                        cursor.execute("""
-                            SELECT COLUMN_NAME, DATA_TYPE 
-                            FROM INFORMATION_SCHEMA.COLUMNS 
-                            WHERE TABLE_NAME = %s
-                            ORDER BY ORDINAL_POSITION
-                        """, [t_name])
-                        for c_row in cursor.fetchall():
-                            c_name = c_row[0]
-                            c_type = c_row[1]
-                            cols.append(f"{c_name} ({c_type})")
+                    for t_name in all_table_names:
+                        info = table_schemas_map.get(t_name, {"category": "", "subcategory": "", "prompt_snippets": []})
+                        doc_info = table_doc_map.get(t_name.lower(), {})
 
-                            cat = info["category"]
-                            sub = info["subcategory"]
+                        sql_cols = []
+                        try:
+                            cursor.execute("""
+                                SELECT COLUMN_NAME, DATA_TYPE 
+                                FROM INFORMATION_SCHEMA.COLUMNS 
+                                WHERE TABLE_NAME = %s
+                                ORDER BY ORDINAL_POSITION
+                            """, [t_name])
+                            for c_row in cursor.fetchall():
+                                c_name = c_row[0]
+                                c_type = c_row[1]
+                                sql_cols.append((c_name, c_type))
 
-                            if cat:
-                                if cat not in category_columns_map:
-                                    category_columns_map[cat] = set()
-                                category_columns_map[cat].add(c_name)
-                            if sub:
-                                if sub not in subcategory_columns_map:
-                                    subcategory_columns_map[sub] = set()
-                                subcategory_columns_map[sub].add(c_name)
+                                cat = info.get("category", "")
+                                sub = info.get("subcategory", "")
 
-                        cols_str = ", ".join(cols) if cols else "Columns derived from specialized subcategory prompt"
-                        snippet = " | ".join(info["prompt_snippets"])[:250]
+                                if cat:
+                                    if cat not in category_columns_map:
+                                        category_columns_map[cat] = set()
+                                    category_columns_map[cat].add(c_name)
+                                if sub:
+                                    if sub not in subcategory_columns_map:
+                                        subcategory_columns_map[sub] = set()
+                                    subcategory_columns_map[sub].add(c_name)
+                        except Exception:
+                            pass
+
+                        # Build enriched semantic document for table schema vector indexing
+                        doc_lines = [f"Table Name: {t_name}"]
+                        cat_val = info.get("category", "")
+                        sub_val = info.get("subcategory", "")
+                        if cat_val or sub_val:
+                            doc_lines.append(f"Category: {cat_val} | Subcategory: {sub_val}")
+
+                        cluster_id = doc_info.get("LouvainClusterId")
+                        if cluster_id is not None and str(cluster_id).strip() != "":
+                            doc_lines.append(f"Louvain Community Cluster ID: {cluster_id}")
+
+                        purpose = doc_info.get("TablePurpose") or ""
+                        if purpose and purpose.strip():
+                            doc_lines.append(f"Table Purpose:\n{purpose.strip()}")
+
+                        def clean_meaning(text):
+                            if not text:
+                                return ""
+                            t = str(text).strip()
+                            prefixes = [
+                                "This is the unique identifier for each", "This is the unique identifier for",
+                                "This is the unique identifier", "This uniquely identifies the", "This uniquely identifies",
+                                "This identifies the specific", "This identifies the", "This identifies",
+                                "This specifies the", "This specifies", "This records the direct response to the checklist item, typically",
+                                "This records the exact date and time when", "This records the last date and time",
+                                "This records the", "This records", "This stores the", "This stores", "This tracks the", "This tracks",
+                                "This field stores any", "This field stores", "This field contains", "This boolean indicates whether",
+                                "This timestamp records when", "This timestamp records", "This column serves as the",
+                                "This column stores", "This column contains"
+                            ]
+                            for p in prefixes:
+                                if t.lower().startswith(p.lower()):
+                                    t = t[len(p):].strip()
+                                    if t:
+                                        t = t[0].upper() + t[1:]
+                                    break
+                            return t
+
+                        def safe_parse_json(val):
+                            if not val:
+                                return None
+                            if isinstance(val, (dict, list)):
+                                return val
+                            if isinstance(val, str):
+                                try:
+                                    return json.loads(val)
+                                except Exception:
+                                    return None
+                            return None
+
+                        col_meanings = safe_parse_json(doc_info.get("ColumnMeanings"))
+                        raw_schema = safe_parse_json(doc_info.get("RawSchema"))
+
+                        col_lines = []
+                        if col_meanings and isinstance(col_meanings, dict):
+                            type_map = {}
+                            if raw_schema and isinstance(raw_schema, list):
+                                for item in raw_schema:
+                                    if isinstance(item, dict) and "name" in item:
+                                        type_map[item["name"].lower()] = item.get("type", "")
+                            for c_name, c_meaning in col_meanings.items():
+                                c_type = type_map.get(c_name.lower(), "")
+                                type_str = f" ({c_type})" if c_type else ""
+                                cleaned_m = clean_meaning(c_meaning)
+                                col_lines.append(f"- {c_name}{type_str}: {cleaned_m}" if cleaned_m else f"- {c_name}{type_str}")
+                        elif raw_schema and isinstance(raw_schema, list):
+                            for item in raw_schema:
+                                if isinstance(item, dict) and "name" in item:
+                                    col_lines.append(f"- {item['name']} ({item.get('type', '')})")
+
+                        if not col_lines and sql_cols:
+                            for c_name, c_type in sql_cols:
+                                col_lines.append(f"- {c_name} ({c_type})")
+
+                        if col_lines:
+                            doc_lines.append("Columns:\n" + "\n".join(col_lines))
+
+                        conn_tables = safe_parse_json(doc_info.get("ConnectedTables"))
+                        if conn_tables and isinstance(conn_tables, list):
+                            conn_names = []
+                            for item in conn_tables:
+                                if isinstance(item, dict):
+                                    rel_tbl = item.get("table_name", "")
+                                    if rel_tbl:
+                                        conn_names.append(f"dbo.[{rel_tbl}]")
+                                elif isinstance(item, str) and item.strip():
+                                    conn_names.append(f"dbo.[{item.strip()}]")
+                            if conn_names:
+                                doc_lines.append("Connected Tables: " + ", ".join(conn_names[:10]))
 
                         t_ids.append(f"tbl_{t_name.replace(' ', '_').lower()}")
-                        t_docs.append(f"Table Name: {t_name}\nCategory: {info['category']} | Subcategory: {info['subcategory']}\nColumns: {cols_str}\nPrompt Schema Context: {snippet}")
-                        t_metas.append({"table_name": t_name, "category": info["category"], "subcategory": info["subcategory"]})
+                        t_docs.append("\n\n".join(doc_lines))
+                        meta_entry = {
+                            "table_name": t_name,
+                            "category": cat_val,
+                            "subcategory": sub_val
+                        }
+                        if cluster_id is not None and str(cluster_id).strip() != "":
+                            meta_entry["louvain_cluster_id"] = str(cluster_id)
+                        t_metas.append(meta_entry)
 
                     if t_ids:
                         schema_coll.upsert(ids=t_ids, documents=t_docs, metadatas=t_metas)
                         HierarchicalSearchConsumer._schema_collection = schema_coll
-                        print(f"🎉 [ChromaDB Auto-Syncer] Synced {len(t_ids)} dynamic table schemas from SQL Server database!")
+                        print(f"🎉 [ChromaDB Auto-Syncer] Synced {len(t_ids)} dynamic enriched table schemas into ChromaDB!")
             except Exception as e_sql:
                 print(f"⚠️ [ChromaDB Auto-Syncer SQL Error]: {e_sql}")
 
@@ -1561,7 +1686,12 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
 
 
     def retrieve_top_k_schemas_chroma(self, query, k=5, table_names=None):
-        """Retrieve top K relevant table schemas for dynamic RAG prompt injection from disk storage"""
+        """
+        Hybrid Global + Subcategory RAG Table Schema Retrieval:
+        Combines global semantic vector search across all database tables
+        with subcategory-scoped table lookups to ensure the correct tables
+        are NEVER missed due to high-level misclassification.
+        """
         if not HAS_CHROMADB:
             return "", []
 
@@ -1570,28 +1700,63 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
             client = chromadb.PersistentClient(path=storage_dir)
             schema_coll = client.get_collection(name="marklytix_table_schemas")
 
-            query_kwargs = {
-                "query_texts": [query],
-                "n_results": k
-            }
+            # 1. Global semantic vector search across ALL database tables
+            global_res = schema_coll.query(query_texts=[query], n_results=k)
+            global_docs = global_res['documents'][0] if global_res and global_res.get('documents') else []
+            global_metas = global_res['metadatas'][0] if global_res and global_res.get('metadatas') else []
 
+            # 2. Subcategory scoped vector search if table_names provided
+            subcat_docs, subcat_metas = [], []
+            sub_res = None
             if table_names and isinstance(table_names, list) and len(table_names) > 0:
                 clean_tables = [t.strip() for t in table_names if t.strip()]
+                query_kwargs = {"query_texts": [query], "n_results": k}
                 if len(clean_tables) == 1:
                     query_kwargs["where"] = {"table_name": clean_tables[0]}
                 elif len(clean_tables) > 1:
                     query_kwargs["where"] = {"table_name": {"$in": clean_tables}}
+                sub_res = schema_coll.query(**query_kwargs)
+                if sub_res and sub_res.get('documents') and sub_res['documents'][0]:
+                    subcat_docs = sub_res['documents'][0]
+                    subcat_metas = sub_res['metadatas'][0]
 
-            results = schema_coll.query(**query_kwargs)
+            # Merge & Priority Rank: Combined Rank Score = 0.70 * Vector Similarity + 0.30 * Priority Score
+            global_dists = global_res.get('distances', [[]])[0] if global_res and global_res.get('distances') else []
+            subcat_dists = sub_res.get('distances', [[]])[0] if sub_res and sub_res.get('distances') else []
+
+            combined_entries = []
+            seen_tables = set()
+
+            for doc, meta, dist in zip(global_docs, global_metas, global_dists if global_dists else [0.5]*len(global_docs)):
+                tbl = meta.get('table_name', '')
+                if tbl and tbl not in seen_tables:
+                    seen_tables.add(tbl)
+                    p_score = float(meta.get('priority_score', '0.50'))
+                    sim = round(max(0.0, 1.0 - (dist * 0.70)), 4)
+                    combined_score = round((0.70 * sim) + (0.30 * p_score), 4)
+                    combined_entries.append((tbl, doc, meta, combined_score))
+
+            for doc, meta, dist in zip(subcat_docs, subcat_metas, subcat_dists if subcat_dists else [0.5]*len(subcat_docs)):
+                tbl = meta.get('table_name', '')
+                if tbl and tbl not in seen_tables:
+                    seen_tables.add(tbl)
+                    p_score = float(meta.get('priority_score', '0.50'))
+                    sim = round(max(0.0, 1.0 - (dist * 0.70)), 4)
+                    combined_score = round((0.70 * sim) + (0.30 * p_score), 4)
+                    combined_entries.append((tbl, doc, meta, combined_score))
+
+            # Sort candidate entries by combined rank score descending
+            combined_entries.sort(key=lambda x: x[3], reverse=True)
+            final_entries = combined_entries[:k]
+            retrieved_tables = [entry[0] for entry in final_entries]
+            table_list_formatted = [f"dbo.[{t}] (Rank: {entry[3]:.2f}, Priority: {entry[2].get('priority_score', 'N/A')})" for t, entry in zip(retrieved_tables, final_entries)]
+            print(f"🎯 [RAG TABLES RETRIEVED BY PRIORITY RANKING] ({len(retrieved_tables)} tables): {table_list_formatted}")
+
             schemas = []
-            retrieved_tables = []
-            if results and results.get('documents') and results['documents'][0]:
-                retrieved_tables = [m.get('table_name', '') for m in results['metadatas'][0] if m.get('table_name')]
-                table_list_formatted = [f"dbo.[{t}]" for t in retrieved_tables]
-                print(f"🎯 [RAG TABLES CONSIDERED] ({len(retrieved_tables)} tables): {table_list_formatted}")
-                for doc, meta in zip(results['documents'][0], results['metadatas'][0]):
-                    clean_doc = doc.split("Prompt Schema Context:")[0].strip() if "Prompt Schema Context:" in doc else doc.strip()
-                    schemas.append(f"--- Table Schema: dbo.[{meta['table_name']}] ---\n{clean_doc}")
+            for tbl, doc, meta, score in final_entries:
+                clean_doc = doc.split("Prompt Schema Context:")[0].strip() if "Prompt Schema Context:" in doc else doc.strip()
+                schemas.append(f"--- Table Schema: dbo.[{tbl}] ---\n{clean_doc}")
+
             return "\n\n".join(schemas), retrieved_tables
         except Exception as e:
             print(f"[ChromaDB RAG] Error retrieving schemas for query: {e}")
@@ -1702,7 +1867,7 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
 
     def classify_subcategory_chroma(self, message, category):
         """Vector-based subcategory classification using Chroma DB cosine similarity"""
-        if not getattr(HierarchicalSearchConsumer, '_chroma_initialized', False) or HierarchicalSearchConsumer._subcat_collection is None:
+        if not getattr(HierarchicalSearchConsumer, '_chroma_initialized', False):
             return {
                 'subcategory': 'general',
                 'confidence': 0.0,
@@ -1710,9 +1875,31 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
                 'reasoning': 'ChromaDB vector store not initialized'
             }
 
+        # Helper to ensure collection is valid
+        def get_subcat_coll():
+            if HierarchicalSearchConsumer._subcat_collection is not None:
+                return HierarchicalSearchConsumer._subcat_collection
+            try:
+                storage_dir = os.path.join(os.path.dirname(__file__), "scratch", "chroma_db_storage")
+                client = chromadb.PersistentClient(path=storage_dir)
+                coll = client.get_collection(name="marklytix_subcategories")
+                HierarchicalSearchConsumer._subcat_collection = coll
+                return coll
+            except Exception:
+                return None
+
+        sub_coll = get_subcat_coll()
+        if sub_coll is None:
+            return {
+                'subcategory': 'general',
+                'confidence': 0.0,
+                'method': 'vector_chroma',
+                'reasoning': 'Subcategory collection unavailable'
+            }
+
         # 1. Restricted Subcategory Search within parent category
         try:
-            results = HierarchicalSearchConsumer._subcat_collection.query(
+            results = sub_coll.query(
                 query_texts=[message],
                 n_results=1,
                 where={"parent_category": category.strip().lower()}
@@ -1737,30 +1924,39 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
                     }
         except Exception as e:
             print(f"[ChromaDB] Subcategory vector search restricted error: {e}")
+            # Refresh collection reference on error
+            try:
+                storage_dir = os.path.join(os.path.dirname(__file__), "scratch", "chroma_db_storage")
+                client = chromadb.PersistentClient(path=storage_dir)
+                sub_coll = client.get_collection(name="marklytix_subcategories")
+                HierarchicalSearchConsumer._subcat_collection = sub_coll
+            except Exception:
+                pass
 
         # 2. Global Unrestricted Subcategory Fallback (Search across all subcategories if restricted search missed)
         try:
-            results_global = HierarchicalSearchConsumer._subcat_collection.query(
-                query_texts=[message],
-                n_results=1
-            )
-            if results_global and results_global.get('documents') and results_global['documents'][0]:
-                dist = results_global['distances'][0][0]
-                similarity = round(max(0.0, 1.0 - (dist * 0.70)), 4)
-                top_meta = results_global['metadatas'][0][0]
-                matched_subcat = top_meta.get('subcategory', 'general')
-                parent_cat = top_meta.get('parent_category', category)
+            if sub_coll:
+                results_global = sub_coll.query(
+                    query_texts=[message],
+                    n_results=1
+                )
+                if results_global and results_global.get('documents') and results_global['documents'][0]:
+                    dist = results_global['distances'][0][0]
+                    similarity = round(max(0.0, 1.0 - (dist * 0.70)), 4)
+                    top_meta = results_global['metadatas'][0][0]
+                    matched_subcat = top_meta.get('subcategory', 'general')
+                    parent_cat = top_meta.get('parent_category', category)
 
-                print(f"💡 [GLOBAL SUBCATEGORY FALLBACK MATCH] Found '{matched_subcat}' under real category '{parent_cat}' (similarity: {similarity:.4f})")
-                return {
-                    'subcategory': matched_subcat,
-                    'parent_category': parent_cat,
-                    'confidence': similarity,
-                    'method': 'vector_chroma_global_fallback',
-                    'matched_doc': results_global['documents'][0][0],
-                    'matched_meta': top_meta,
-                    'reasoning': f"Global subcategory match '{matched_subcat}' under parent category '{parent_cat}' (similarity: {similarity:.2f})"
-                }
+                    print(f"💡 [GLOBAL SUBCATEGORY FALLBACK MATCH] Found '{matched_subcat}' under real category '{parent_cat}' (similarity: {similarity:.4f})")
+                    return {
+                        'subcategory': matched_subcat,
+                        'parent_category': parent_cat,
+                        'confidence': similarity,
+                        'method': 'vector_chroma_global_fallback',
+                        'matched_doc': results_global['documents'][0][0],
+                        'matched_meta': top_meta,
+                        'reasoning': f"Global subcategory match '{matched_subcat}' under parent category '{parent_cat}' (similarity: {similarity:.2f})"
+                    }
         except Exception as e_glob:
             print(f"[ChromaDB] Subcategory global search error: {e_glob}")
 
@@ -2454,7 +2650,13 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
             print("🔍" + "-" * 50 + "🔍")
             print("🧠 [Chroma DB RAG] Fetching dynamic table schemas from Chroma vector store...")
             start_time_0 = datetime.now()
-            rag_schemas, retrieved_tables = self.retrieve_top_k_schemas_chroma(message, k=5, table_names=available_tables)
+
+            # Extract clean current query string (stripping previous conversation context if present)
+            clean_query = message
+            if "Current question:" in clean_query:
+                clean_query = clean_query.split("Current question:")[-1].strip()
+
+            rag_schemas, retrieved_tables = self.retrieve_top_k_schemas_chroma(clean_query, k=5, table_names=available_tables)
             end_time_0 = datetime.now()
             rag_time_taken = round((end_time_0 - start_time_0).total_seconds(), 3)
             
@@ -2481,9 +2683,12 @@ You are an expert SQL Server database developer. Generate a precise, valid T-SQL
 STRICT INSTRUCTIONS:
 1. CRITICAL: ALWAYS ENCLOSE ALL SQL SERVER TABLE NAMES IN SQUARE BRACKETS e.g. dbo.[table_name], especially when table names contain spaces or special characters!
 2. Use T-SQL syntax for SQL Server (use TOP instead of LIMIT for row limiting).
-3. Use ONLY the available tables and exact column definitions provided in the schema below:
+3. Use ONLY the available tables and exact column definitions provided in the schema below.
+4. CRITICAL: You MUST ONLY query or JOIN tables whose FULL schema and column definitions are explicitly provided below! Connected Tables lists are for relational awareness only; NEVER guess columns or query a table whose column list is not provided below!
+5. CRITICAL: When multiple tables contain similar columns (e.g. master tables vs backup _bkp tables), ALWAYS prefer active production tables with higher Production Priority Scores!
 
-{rag_schemas}
+AVAILABLE TABLE SCHEMAS:
+{rag_schemas} 
 
 USER QUERY: "{message}"
 
@@ -2507,6 +2712,12 @@ Respond strictly with ONLY the executable T-SQL query block.
                 print(f"⚠️ [PROMPT WARNING] Prompt size is large (~{approx_tokens:,} tokens). Monitoring for hallucination risk.")
             else:
                 print(f"✅ [PROMPT HEALTH] Prompt size is optimal (~{approx_tokens:,} tokens). Safe LLM context window.")
+
+            print("📝" + "=" * 50 + "📝")
+            print("⚡ FINAL GENERATED LLM PROMPT SENT TO MODEL ⚡")
+            print("📝" + "=" * 50 + "📝")
+            print(complete_prompt)
+            print("📝" + "=" * 50 + "📝\n")
 
             # Use your existing chat2 model with the specialized prompt
             print("🤖 Sending prompt to AI model for SQL generation...")
@@ -2545,6 +2756,7 @@ Respond strictly with ONLY the executable T-SQL query block.
                 'confidence': confidence,
                 'reasoning': reasoning,
                 'prompt_used': f"{category}_{subcategory}",
+                'final_generated_prompt': complete_prompt,
                 'level_0_rag_tables': {
                     'tables_fetched': tables_fetched_formatted,
                     'raw_table_names': retrieved_tables if retrieved_tables else available_tables[:5],

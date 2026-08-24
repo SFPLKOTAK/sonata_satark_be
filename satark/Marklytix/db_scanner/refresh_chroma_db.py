@@ -25,23 +25,19 @@ def refresh_chroma_db():
     marklytix_dir = Path(__file__).resolve().parent.parent
     storage_dir = marklytix_dir / "scratch" / "chroma_db_storage"
 
-    # 1. Clear disk storage if exists
-    if storage_dir.exists():
-        print(f"[CLEANUP] Deleting stale ChromaDB storage folder: {storage_dir}")
-        try:
-            shutil.rmtree(storage_dir)
-            print("[OK] Stale ChromaDB storage deleted cleanly!")
-        except Exception as e:
-            print(f"[WARN] Could not delete directory completely: {e}")
-
+    # 1. Clear disk storage collections if exists
     storage_dir.mkdir(parents=True, exist_ok=True)
-
-    # 2. Try importing chromadb
     try:
         import chromadb
-    except ImportError:
-        print("[ERROR] chromadb package is not installed. Please run: pip install chromadb")
-        return
+        client = chromadb.PersistentClient(path=str(storage_dir))
+        for coll_name in ["marklytix_categories", "marklytix_subcategories", "marklytix_table_schemas"]:
+            try:
+                client.delete_collection(name=coll_name)
+                print(f"[CLEANUP] Reset collection '{coll_name}'")
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[WARN] Collection cleanup notice: {e}")
 
     # 3. Connect to SQL Server
     sql_user = os.environ.get('DATABASE_USER', '')
@@ -67,8 +63,96 @@ def refresh_chroma_db():
     subcategory_columns_map = {}
     table_schemas_map = {}
 
+    import json
+    def safe_parse_json(val):
+        if not val:
+            return None
+        if isinstance(val, (dict, list)):
+            return val
+        if isinstance(val, str):
+            try:
+                return json.loads(val)
+            except Exception:
+                return None
+        return None
+
     with engine.connect() as conn:
-        # A. Read Subcategory Prompts & Table Lists
+        # A. Fetch Table Documentation metadata if available
+        table_doc_map = {}
+        try:
+            doc_rows = conn.execute(text("""
+                SELECT TableName, TablePurpose, ConnectedTables, ColumnMeanings, RawSchema, LouvainClusterId
+                FROM dbo.Marklytix_TableDocumentation
+            """)).fetchall()
+            for d_row in doc_rows:
+                tbl_name_raw = d_row[0] or ""
+                if tbl_name_raw:
+                    table_doc_map[tbl_name_raw.strip().lower()] = {
+                        "TableName": tbl_name_raw.strip(),
+                        "TablePurpose": d_row[1] or "",
+                        "ConnectedTables": d_row[2] or "",
+                        "ColumnMeanings": d_row[3] or "",
+                        "RawSchema": d_row[4] or "",
+                        "LouvainClusterId": d_row[5]
+                    }
+        except Exception as e_tdoc:
+            print(f"[WARN] Marklytix_TableDocumentation fetch warning: {e_tdoc}")
+
+        # A2. Fetch Table Stats (TotalRows & DataSize_MB) from SQL Server sys views
+        table_stats_map = {}
+        try:
+            stats_rows = conn.execute(text("""
+                SELECT 
+                    t.name AS TableName,
+                    SUM(p.rows) AS TotalRows,
+                    CAST(ROUND((SUM(a.total_pages) * 8.0) / 1024.0, 2) AS FLOAT) AS DataSize_MB
+                FROM sys.tables t
+                INNER JOIN sys.indexes i ON t.object_id = i.object_id
+                INNER JOIN sys.partitions p ON i.object_id = p.object_id AND i.index_id = p.index_id
+                INNER JOIN sys.allocation_units a ON p.partition_id = a.container_id
+                WHERE i.index_id IN (0, 1)
+                GROUP BY t.name
+            """)).fetchall()
+            for s_row in stats_rows:
+                s_name = s_row[0] or ""
+                if s_name:
+                    table_stats_map[s_name.strip().lower()] = {
+                        "TotalRows": s_row[1] or 0,
+                        "DataSize_MB": s_row[2] or 0.0
+                    }
+        except Exception as e_stats:
+            print(f"[WARN] Table stats query warning: {e_stats}")
+
+        import math
+        def calculate_table_priority_score(table_name, total_rows=0, data_size_mb=0.0):
+            t_name_lower = table_name.lower().strip()
+            rows = max(0, int(total_rows or 0))
+            vol_score = 0.0 if rows == 0 else min(1.0, math.log10(rows + 1) / 5.0)
+            size_mb = max(0.0, float(data_size_mb or 0.0))
+            storage_score = min(1.0, size_mb / 10.0)
+            
+            is_backup = any(b in t_name_lower for b in ['_bkp', 'backup', 'bkp_', '_8june', '_19june', '_28july', '_12aug'])
+            is_temp = any(tmp in t_name_lower for tmp in ['temp', 'tmp', 'staging'])
+            
+            penalty = 0.0
+            if is_backup:
+                penalty = -0.60
+            elif is_temp and rows == 0:
+                penalty = -0.70
+            elif is_temp:
+                penalty = -0.30
+            elif rows == 0:
+                penalty = -0.50
+            elif t_name_lower.startswith('mst_') or t_name_lower.startswith('accounts_') or t_name_lower.startswith('audit_') or t_name_lower.startswith('loan_'):
+                penalty = +0.15
+                
+            base_score = (0.50 * vol_score) + (0.30 * storage_score) + penalty
+            if rows > 0 and not is_backup and not (is_temp and rows == 0):
+                base_score += 0.20
+                
+            return round(max(0.01, min(1.00, base_score)), 2)
+
+        # B. Read Subcategory Prompts & Table Lists
         p_rows = conn.execute(text("""
             SELECT Category, Subcategory, Table_List, PromptContent 
             FROM dbo.Marklytix_SubcategoryPrompts 
@@ -92,40 +176,139 @@ def refresh_chroma_db():
                 else:
                     table_schemas_map[t_name]["prompt_snippets"].append(prompt_content[:300])
 
-        # B. Read Table Columns & Build Table Schema Vectors
+        all_table_names = list(set(table_schemas_map.keys()) | set(table_doc_map.keys()))
+
+        # C. Read Table Columns & Build Enriched Table Schema Vectors
         t_ids, t_docs, t_metas = [], [], []
-        for t_name, info in table_schemas_map.items():
-            col_rows = conn.execute(text("""
-                SELECT COLUMN_NAME, DATA_TYPE 
-                FROM INFORMATION_SCHEMA.COLUMNS 
-                WHERE LOWER(TABLE_NAME) = LOWER(:t_name)
-                ORDER BY ORDINAL_POSITION
-            """), {"t_name": t_name}).fetchall()
+        for t_name in all_table_names:
+            info = table_schemas_map.get(t_name, {"category": "", "subcategory": "", "prompt_snippets": []})
+            doc_info = table_doc_map.get(t_name.lower(), {})
 
-            cols = []
-            for c_row in col_rows:
-                c_name = c_row[0]
-                c_type = c_row[1]
-                cols.append(f"{c_name} ({c_type})")
+            sql_cols = []
+            try:
+                col_rows = conn.execute(text("""
+                    SELECT COLUMN_NAME, DATA_TYPE 
+                    FROM INFORMATION_SCHEMA.COLUMNS 
+                    WHERE LOWER(TABLE_NAME) = LOWER(:t_name)
+                    ORDER BY ORDINAL_POSITION
+                """), {"t_name": t_name}).fetchall()
 
-                cat = info["category"]
-                sub = info["subcategory"]
+                for c_row in col_rows:
+                    c_name = c_row[0]
+                    c_type = c_row[1]
+                    sql_cols.append((c_name, c_type))
 
-                if cat:
-                    category_columns_map.setdefault(cat, set()).add(c_name)
-                if sub:
-                    subcategory_columns_map.setdefault(sub, set()).add(c_name)
+                    cat = info.get("category", "")
+                    sub = info.get("subcategory", "")
 
-            cols_str = ", ".join(cols) if cols else "Columns derived from specialized subcategory prompt"
-            snippet = " | ".join(info["prompt_snippets"])[:250]
+                    if cat:
+                        category_columns_map.setdefault(cat, set()).add(c_name)
+                    if sub:
+                        subcategory_columns_map.setdefault(sub, set()).add(c_name)
+            except Exception:
+                pass
+
+            # Build enriched semantic document for table schema vector indexing
+            t_stat = table_stats_map.get(t_name.lower(), {})
+            t_rows = t_stat.get("TotalRows", 0)
+            t_size = t_stat.get("DataSize_MB", 0.0)
+            p_score = calculate_table_priority_score(t_name, t_rows, t_size)
+
+            doc_lines = [f"Table Name: {t_name}"]
+            doc_lines.append(f"Production Priority Score: {p_score} | Active Rows: {t_rows:,} | Data Size: {t_size:.2f} MB")
+            cat_val = info.get("category", "")
+            sub_val = info.get("subcategory", "")
+            if cat_val or sub_val:
+                doc_lines.append(f"Category: {cat_val} | Subcategory: {sub_val}")
+
+            cluster_id = doc_info.get("LouvainClusterId")
+            if cluster_id is not None and str(cluster_id).strip() != "":
+                doc_lines.append(f"Louvain Community Cluster ID: {cluster_id}")
+
+            purpose = doc_info.get("TablePurpose") or ""
+            if purpose and purpose.strip():
+                doc_lines.append(f"Table Purpose:\n{purpose.strip()}")
+
+            def clean_meaning(text):
+                if not text:
+                    return ""
+                t = str(text).strip()
+                prefixes = [
+                    "This is the unique identifier for each", "This is the unique identifier for",
+                    "This is the unique identifier", "This uniquely identifies the", "This uniquely identifies",
+                    "This identifies the specific", "This identifies the", "This identifies",
+                    "This specifies the", "This specifies", "This records the direct response to the checklist item, typically",
+                    "This records the exact date and time when", "This records the last date and time",
+                    "This records the", "This records", "This stores the", "This stores", "This tracks the", "This tracks",
+                    "This field stores any", "This field stores", "This field contains", "This boolean indicates whether",
+                    "This timestamp records when", "This timestamp records", "This column serves as the",
+                    "This column stores", "This column contains"
+                ]
+                for p in prefixes:
+                    if t.lower().startswith(p.lower()):
+                        t = t[len(p):].strip()
+                        if t:
+                            t = t[0].upper() + t[1:]
+                        break
+                return t
+
+            col_meanings = safe_parse_json(doc_info.get("ColumnMeanings"))
+            raw_schema = safe_parse_json(doc_info.get("RawSchema"))
+
+            col_lines = []
+            if col_meanings and isinstance(col_meanings, dict):
+                type_map = {}
+                if raw_schema and isinstance(raw_schema, list):
+                    for item in raw_schema:
+                        if isinstance(item, dict) and "name" in item:
+                            type_map[item["name"].lower()] = item.get("type", "")
+                for c_name, c_meaning in col_meanings.items():
+                    c_type = type_map.get(c_name.lower(), "")
+                    type_str = f" ({c_type})" if c_type else ""
+                    cleaned_m = clean_meaning(c_meaning)
+                    col_lines.append(f"- {c_name}{type_str}: {cleaned_m}" if cleaned_m else f"- {c_name}{type_str}")
+            elif raw_schema and isinstance(raw_schema, list):
+                for item in raw_schema:
+                    if isinstance(item, dict) and "name" in item:
+                        col_lines.append(f"- {item['name']} ({item.get('type', '')})")
+
+            if not col_lines and sql_cols:
+                for c_name, c_type in sql_cols:
+                    col_lines.append(f"- {c_name} ({c_type})")
+
+            if col_lines:
+                doc_lines.append("Columns:\n" + "\n".join(col_lines))
+
+            conn_tables = safe_parse_json(doc_info.get("ConnectedTables"))
+            if conn_tables and isinstance(conn_tables, list):
+                conn_names = []
+                for item in conn_tables:
+                    if isinstance(item, dict):
+                        rel_tbl = item.get("table_name", "")
+                        if rel_tbl:
+                            conn_names.append(f"dbo.[{rel_tbl}]")
+                    elif isinstance(item, str) and item.strip():
+                        conn_names.append(f"dbo.[{item.strip()}]")
+                if conn_names:
+                    doc_lines.append("Connected Tables: " + ", ".join(conn_names[:10]))
 
             t_ids.append(f"tbl_{t_name.replace(' ', '_').lower()}")
-            t_docs.append(f"Table Name: {t_name}\nCategory: {info['category']} | Subcategory: {info['subcategory']}\nColumns: {cols_str}\nPrompt Schema Context: {snippet}")
-            t_metas.append({"table_name": t_name, "category": info["category"], "subcategory": info["subcategory"]})
+            t_docs.append("\n\n".join(doc_lines))
+            meta_entry = {
+                "table_name": t_name,
+                "category": cat_val,
+                "subcategory": sub_val,
+                "priority_score": str(p_score),
+                "total_rows": str(t_rows),
+                "data_size_mb": str(t_size)
+            }
+            if cluster_id is not None and str(cluster_id).strip() != "":
+                meta_entry["louvain_cluster_id"] = str(cluster_id)
+            t_metas.append(meta_entry)
 
         if t_ids:
             schema_coll.add(ids=t_ids, documents=t_docs, metadatas=t_metas)
-            print(f"[EMBEDDED] Embedded {len(t_ids)} Table Schema vectors into 'marklytix_table_schemas'")
+            print(f"[EMBEDDED] Embedded {len(t_ids)} enriched Table Schema vectors into 'marklytix_table_schemas'")
 
         # C. Read Categories & Embed
         cat_rows = conn.execute(text("""

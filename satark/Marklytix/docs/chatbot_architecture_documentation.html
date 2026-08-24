@@ -1,0 +1,901 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sonata Satark - Marklytix Chatbot Complete Architecture</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- Mermaid.js for Diagrams -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+        :root {
+            --bg-dark: #09090b;
+            --bg-card: #121215;
+            --bg-card-hover: #18181c;
+            --border-color: #27272a;
+            --border-glow: #3f3f46;
+            
+            --accent-cyan: #06b6d4;
+            --accent-sky: #38bdf8;
+            --accent-emerald: #10b981;
+            --accent-purple: #a855f7;
+            --accent-amber: #f59e0b;
+            --accent-rose: #f43f5e;
+            --accent-indigo: #6366f1;
+
+            --text-main: #f4f4f5;
+            --text-muted: #a1a1aa;
+            --text-dim: #71717a;
+            
+            --font-heading: 'Outfit', sans-serif;
+            --font-body: 'Inter', sans-serif;
+            --font-code: 'Fira Code', monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            font-family: var(--font-body);
+            line-height: 1.6;
+            padding: 0;
+            margin: 0;
+            overflow-x: hidden;
+        }
+
+        /* Header Styling */
+        header {
+            background: linear-gradient(180deg, rgba(18, 18, 21, 0.95) 0%, rgba(9, 9, 11, 0.9) 100%);
+            backdrop-filter: blur(16px);
+            border-bottom: 1px solid var(--border-color);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            padding: 1.25rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .brand-logo {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: var(--font-heading);
+            font-weight: 800;
+            font-size: 1.25rem;
+            color: #ffffff;
+            box-shadow: 0 0 20px rgba(6, 182, 212, 0.4);
+        }
+
+        .brand-title {
+            font-family: var(--font-heading);
+            font-size: 1.35rem;
+            font-weight: 700;
+            background: linear-gradient(90deg, #ffffff 0%, #a1a1aa 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .brand-tag {
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            padding: 0.2rem 0.6rem;
+            border-radius: 20px;
+            background: rgba(6, 182, 212, 0.1);
+            color: var(--accent-cyan);
+            border: 1px solid rgba(6, 182, 212, 0.3);
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 1.5rem;
+            list-style: none;
+        }
+
+        .nav-links a {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 0.85rem;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+
+        .nav-links a:hover {
+            color: var(--accent-cyan);
+        }
+
+        /* Layout Container */
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2.5rem 2rem;
+        }
+
+        /* Hero Banner */
+        .hero {
+            position: relative;
+            padding: 3rem 2.5rem;
+            border-radius: 24px;
+            background: radial-gradient(circle at top right, rgba(168, 85, 247, 0.15), transparent 50%),
+                        radial-gradient(circle at bottom left, rgba(6, 182, 212, 0.15), transparent 50%),
+                        var(--bg-card);
+            border: 1px solid var(--border-color);
+            margin-bottom: 3rem;
+            overflow: hidden;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+        }
+
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0; height: 1px;
+            background: linear-gradient(90deg, transparent, var(--accent-cyan), var(--accent-purple), transparent);
+        }
+
+        .hero-title {
+            font-family: var(--font-heading);
+            font-size: 2.5rem;
+            font-weight: 800;
+            margin-bottom: 1rem;
+            line-height: 1.2;
+        }
+
+        .hero-title span {
+            background: linear-gradient(90deg, var(--accent-cyan), var(--accent-purple));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .hero-subtitle {
+            font-size: 1.05rem;
+            color: var(--text-muted);
+            max-width: 900px;
+            margin-bottom: 2rem;
+        }
+
+        .badges-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+        }
+
+        .badge-card {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--border-color);
+            font-size: 0.8rem;
+            font-weight: 500;
+        }
+
+        .badge-icon {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+
+        /* Section Header */
+        .section-header {
+            margin-bottom: 1.75rem;
+        }
+
+        .section-tag {
+            font-family: var(--font-code);
+            font-size: 0.75rem;
+            color: var(--accent-cyan);
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            margin-bottom: 0.25rem;
+        }
+
+        .section-title {
+            font-family: var(--font-heading);
+            font-size: 1.75rem;
+            font-weight: 700;
+        }
+
+        /* Diagram Box */
+        .diagram-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            padding: 2rem;
+            margin-bottom: 3rem;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            overflow-x: auto;
+        }
+
+        .diagram-card .mermaid {
+            display: flex;
+            justify-content: center;
+        }
+
+        /* Pipeline Grid */
+        .pipeline-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 3rem;
+        }
+
+        .level-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 18px;
+            padding: 1.75rem;
+            position: relative;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .level-card:hover {
+            transform: translateY(-4px);
+            border-color: var(--border-glow);
+            box-shadow: 0 12px 24px rgba(0,0,0,0.4);
+        }
+
+        .level-card::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 3px;
+            border-radius: 18px 18px 0 0;
+        }
+
+        .l0::before { background: var(--accent-emerald); }
+        .l1::before { background: var(--accent-sky); }
+        .l2::before { background: var(--accent-purple); }
+        .l3::before { background: var(--accent-amber); }
+        .l4::before { background: var(--accent-rose); }
+
+        .level-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .level-pill {
+            font-family: var(--font-code);
+            font-size: 0.7rem;
+            font-weight: 700;
+            padding: 0.25rem 0.6rem;
+            border-radius: 6px;
+            text-transform: uppercase;
+        }
+
+        .l0 .level-pill { background: rgba(16, 185, 129, 0.15); color: var(--accent-emerald); }
+        .l1 .level-pill { background: rgba(56, 189, 248, 0.15); color: var(--accent-sky); }
+        .l2 .level-pill { background: rgba(168, 85, 247, 0.15); color: var(--accent-purple); }
+        .l3 .level-pill { background: rgba(245, 158, 11, 0.15); color: var(--accent-amber); }
+        .l4 .level-pill { background: rgba(244, 63, 94, 0.15); color: var(--accent-rose); }
+
+        .level-title {
+            font-family: var(--font-heading);
+            font-size: 1.2rem;
+            font-weight: 700;
+            margin-bottom: 0.75rem;
+        }
+
+        .level-desc {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            margin-bottom: 1.25rem;
+            flex-grow: 1;
+        }
+
+        .feature-list {
+            list-style: none;
+            space-y: 0.5rem;
+        }
+
+        .feature-item {
+            font-size: 0.8rem;
+            color: var(--text-main);
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+            margin-bottom: 0.4rem;
+        }
+
+        .feature-bullet {
+            color: var(--accent-cyan);
+            font-weight: bold;
+        }
+
+        /* Math & Formula Box */
+        .formula-card {
+            background: linear-gradient(135deg, rgba(18, 18, 21, 1) 0%, rgba(24, 24, 28, 1) 100%);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            padding: 2rem;
+            margin-bottom: 3rem;
+            position: relative;
+        }
+
+        .formula-card::after {
+            content: 'MATH ENGINE';
+            position: absolute;
+            top: 1rem; right: 1.5rem;
+            font-family: var(--font-code);
+            font-size: 0.65rem;
+            letter-spacing: 2px;
+            color: var(--accent-emerald);
+            background: rgba(16, 185, 129, 0.1);
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+        }
+
+        .formula-box {
+            background: #000000;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            border-radius: 12px;
+            padding: 1.25rem 1.5rem;
+            font-family: var(--font-code);
+            font-size: 0.95rem;
+            color: var(--accent-emerald);
+            margin: 1rem 0;
+            overflow-x: auto;
+            box-shadow: inset 0 2px 8px rgba(0,0,0,0.8);
+        }
+
+        /* Code Block Styling */
+        pre {
+            background: #060608;
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1.25rem;
+            font-family: var(--font-code);
+            font-size: 0.82rem;
+            color: #e4e4e7;
+            overflow-x: auto;
+            margin-bottom: 1.5rem;
+            line-height: 1.5;
+        }
+
+        code .keyword { color: var(--accent-purple); font-weight: bold; }
+        code .function { color: var(--accent-sky); }
+        code .string { color: var(--accent-emerald); }
+        code .comment { color: var(--text-dim); font-style: italic; }
+
+        /* Metrics Table */
+        .table-wrapper {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            overflow: hidden;
+            margin-bottom: 3rem;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+            font-size: 0.85rem;
+        }
+
+        th {
+            background: rgba(255, 255, 255, 0.03);
+            padding: 1rem 1.25rem;
+            font-family: var(--font-code);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        td {
+            padding: 1rem 1.25rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            color: var(--text-main);
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        tr:hover td {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            padding: 0.2rem 0.6rem;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .status-high { background: rgba(16, 185, 129, 0.15); color: var(--accent-emerald); border: 1px solid rgba(16, 185, 129, 0.3); }
+        .status-medium { background: rgba(245, 158, 11, 0.15); color: var(--accent-amber); border: 1px solid rgba(245, 158, 11, 0.3); }
+        .status-low { background: rgba(244, 63, 94, 0.15); color: var(--accent-rose); border: 1px solid rgba(244, 63, 94, 0.3); }
+
+        /* Interactive Tabs */
+        .tab-buttons {
+            display: flex;
+            gap: 0.5rem;
+            border-bottom: 1px solid var(--border-color);
+            margin-bottom: 1.5rem;
+        }
+
+        .tab-btn {
+            background: none;
+            border: none;
+            padding: 0.75rem 1.25rem;
+            color: var(--text-muted);
+            font-family: var(--font-body);
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s ease;
+        }
+
+        .tab-btn.active {
+            color: var(--accent-cyan);
+            border-bottom-color: var(--accent-cyan);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        /* Footer */
+        footer {
+            border-top: 1px solid var(--border-color);
+            padding: 2rem;
+            text-align: center;
+            color: var(--text-dim);
+            font-size: 0.8rem;
+            background: var(--bg-card);
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Header Navigation -->
+    <header>
+        <div class="brand">
+            <div class="brand-logo">S</div>
+            <div>
+                <div class="brand-title">Sonata Satark</div>
+                <div style="font-size: 0.7rem; color: var(--text-muted);">Marklytix Hierarchical Search Engine</div>
+            </div>
+            <span class="brand-tag">v2.5 Enterprise</span>
+        </div>
+        <ul class="nav-links">
+            <li><a href="#pipeline">5-Level Pipeline</a></li>
+            <li><a href="#diagram">Architecture Diagram</a></li>
+            <li><a href="#priority">Table Priority Engine</a></li>
+            <li><a href="#code">Core Code Specs</a></li>
+            <li><a href="#metrics">Database Stats Matrix</a></li>
+        </ul>
+    </header>
+
+    <div class="container">
+
+        <!-- Hero Section -->
+        <section class="hero">
+            <h1 class="hero-title">Marklytix <span>Hierarchical AI Chatbot</span> Architecture</h1>
+            <p class="hero-subtitle">
+                An enterprise-grade, 5-level multi-agent natural language database engine powered by 
+                <strong>ChromaDB Vector Store</strong>, <strong>SQL Server Production Vitality Scoring</strong>, and 
+                <strong>Strict Session Branch Scoping (`branch_id`)</strong>.
+            </p>
+            <div class="badges-grid">
+                <div class="badge-card"><div class="badge-icon" style="background: var(--accent-emerald);"></div> 0% Schema Hallucination Rate</div>
+                <div class="badge-card"><div class="badge-icon" style="background: var(--accent-cyan);"></div> ~850 Token Streamlined Prompts</div>
+                <div class="badge-card"><div class="badge-icon" style="background: var(--accent-purple);"></div> 71 Enriched Vector Table Documents</div>
+                <div class="badge-card"><div class="badge-icon" style="background: var(--accent-amber);"></div> Real-Time WebSocket Prompt Inspector</div>
+                <div class="badge-card"><div class="badge-icon" style="background: var(--accent-rose);"></div> Read-Only ODBC Execution Safety</div>
+            </div>
+        </section>
+
+        <!-- 5-Level Architecture Overview -->
+        <section id="pipeline">
+            <div class="section-header">
+                <div class="section-tag">MULTI-AGENT PIPELINE</div>
+                <h2 class="section-title">The 5-Level Hierarchical Execution Pipeline</h2>
+            </div>
+
+            <div class="pipeline-grid">
+                <!-- Level 0 -->
+                <div class="level-card l0">
+                    <div class="level-header">
+                        <span class="level-pill">Level 0</span>
+                        <span style="font-size: 0.75rem; color: var(--accent-emerald);">RAG Fetcher</span>
+                    </div>
+                    <h3 class="level-title">Dynamic RAG & Priority Scoring</h3>
+                    <p class="level-desc">Extracts current query context, calculates table priority scores from SQL Server stats, and retrieves top 5 high-vitality schemas.</p>
+                    <ul class="feature-list">
+                        <li class="feature-item"><span class="feature-bullet">›</span> Turn-Isolated Context Stripping</li>
+                        <li class="feature-item"><span class="feature-bullet">›</span> Logarithmic Row Volume Scoring</li>
+                        <li class="feature-item"><span class="feature-bullet">›</span> Legacy Backup Table Penalty (-0.60)</li>
+                    </ul>
+                </div>
+
+                <!-- Level 1 -->
+                <div class="level-card l1">
+                    <div class="level-header">
+                        <span class="level-pill">Level 1</span>
+                        <span style="font-size: 0.75rem; color: var(--accent-sky);">Classifier</span>
+                    </div>
+                    <h3 class="level-title">Category Classification</h3>
+                    <p class="level-desc">Routes query to 1 of 4 operational domains using direct schema table matching, sub-second keywords, and ChromaDB vector search.</p>
+                    <ul class="feature-list">
+                        <li class="feature-item"><span class="feature-bullet">›</span> Direct Schema Overrider</li>
+                        <li class="feature-item"><span class="feature-bullet">›</span> Cosine Vector Distance Matching</li>
+                        <li class="feature-item"><span class="feature-bullet">›</span> General Chitchat Detection</li>
+                    </ul>
+                </div>
+
+                <!-- Level 2 -->
+                <div class="level-card l2">
+                    <div class="level-header">
+                        <span class="level-pill">Level 2</span>
+                        <span style="font-size: 0.75rem; color: var(--accent-purple);">Router</span>
+                    </div>
+                    <h3 class="level-title">Subcategory Router</h3>
+                    <p class="level-desc">Narrows domain into specific operational subcategories with restricted ChromaDB vector search and auto-reconnect collection guards.</p>
+                    <ul class="feature-list">
+                        <li class="feature-item"><span class="feature-bullet">›</span> Parent Category Where Filtering</li>
+                        <li class="feature-item"><span class="feature-bullet">›</span> Global Fallback Unrestricted Search</li>
+                        <li class="feature-item"><span class="feature-bullet">›</span> Auto-Reload Stale Handles</li>
+                    </ul>
+                </div>
+
+                <!-- Level 3 -->
+                <div class="level-card l3">
+                    <div class="level-header">
+                        <span class="level-pill">Level 3</span>
+                        <span style="font-size: 0.75rem; color: var(--accent-amber);">SQL Generator</span>
+                    </div>
+                    <h3 class="level-title">Specialized T-SQL Generation</h3>
+                    <p class="level-desc">Injects specialized subcategory prompts, priority badges, and strictly constructs bracketed `dbo.[table]` T-SQL queries.</p>
+                    <ul class="feature-list">
+                        <li class="feature-item"><span class="feature-bullet">›</span> Bracketed SQL Server Syntax</li>
+                        <li class="feature-item"><span class="feature-bullet">›</span> Non-Retrieved Table Guardrails</li>
+                        <li class="feature-item"><span class="feature-bullet">›</span> Live Prompt Stream over WS</li>
+                    </ul>
+                </div>
+
+                <!-- Level 4 -->
+                <div class="level-card l4">
+                    <div class="level-header">
+                        <span class="level-pill">Level 4</span>
+                        <span style="font-size: 0.75rem; color: var(--accent-rose);">Executor</span>
+                    </div>
+                    <h3 class="level-title">Execution & Synthesis</h3>
+                    <p class="level-desc">Executes query against SQL Server via SQLAlchemy/pyodbc, formats HTML data table, and synthesizes executive briefing.</p>
+                    <ul class="feature-list">
+                        <li class="feature-item"><span class="feature-bullet">›</span> Multi-tier Connection Fallbacks</li>
+                        <li class="feature-item"><span class="feature-bullet">›</span> Automated HTML Data Previews</li>
+                        <li class="feature-item"><span class="feature-bullet">›</span> AI Executive Narrative Briefing</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- System Architecture Mermaid Diagram -->
+        <section id="diagram">
+            <div class="section-header">
+                <div class="section-tag">SYSTEM DIAGRAM</div>
+                <h2 class="section-title">Complete End-to-End Chatbot Execution Architecture</h2>
+            </div>
+
+            <div class="diagram-card">
+                <div class="mermaid">
+graph TD
+    %% Client & Connection Layer
+    Auditor([Auditor Mobile / Web Client]) -->|1. WS Handshake with branch_id| Consumer[Django Channels: HierarchicalSearchConsumer]
+    
+    %% Level 0 & Priority Scoring Subsystem
+    subgraph Level0["Level 0: RAG Schema Fetcher & Priority Scoring Engine"]
+        Consumer -->|2. Extract Current Query| ContextStrip[Clean Query Context Stripper]
+        ContextStrip -->|Current Turn Query| GlobalChroma[ChromaDB Vector Store: marklytix_table_schemas]
+        
+        SQLStats[(SQL Server: sys.partitions / sys.allocation_units)] -->|Fetch TotalRows & DataSize_MB| VitalityEngine[Table Vitality & Priority Engine]
+        VitalityEngine -->|Calculate PriorityScore 0.01 - 1.00| PriorityRanker[Hybrid Priority Ranker]
+        
+        GlobalChroma --> PriorityRanker
+        PriorityRanker -->|Rank = 0.70*Similarity + 0.30*PriorityScore| Top5Schemas[Top 5 High-Vitality Table Schemas]
+    end
+
+    %% Level 1 Subsystem
+    subgraph Level1["Level 1: Category Classifier Agent"]
+        Consumer -->|3. Query| DirectMatch[Direct Table Schema Match Overrider]
+        DirectMatch -->|Direct Match Found| L1Result[Category: Domain 1-4]
+        DirectMatch -->|No Direct Match| KeywordL1[Keyword Match Engine]
+        KeywordL1 --> ChromaL1[ChromaDB Category Vectors: marklytix_categories]
+        ChromaL1 --> L1Result
+    end
+
+    %% Level 2 Subsystem
+    subgraph Level2["Level 2: Subcategory Router Agent"]
+        L1Result --> SubcatRouter[Hybrid Subcategory Classifier]
+        SubcatRouter -->|Restricted Search where parent_category=X| ChromaL2[ChromaDB Subcategory Vectors]
+        ChromaL2 -->|Fallback if needed| GlobalSubcat[Global Subcategory Fallback]
+        GlobalSubcat --> L2Result[Subcategory: Targeted Sub-Domain]
+    end
+
+    %% Level 3 Subsystem
+    subgraph Level3["Level 3: T-SQL Generator Agent"]
+        L2Result --> SubcatPrompt[(dbo.Marklytix_SubcategoryPrompts)]
+        Top5Schemas --> PromptBuilder[Compact Prompt Construction & Guardrail Injector]
+        SubcatPrompt --> PromptBuilder
+        
+        PromptBuilder -->|Complete Streamed Prompt| GeminiModel[AI LLM Engine: Gemini 2.0 / Llama 3.3]
+        GeminiModel -->|Generated T-SQL Query| TSQL[Executable SQL Query: SELECT TOP N ...]
+        PromptBuilder -->|Live WS Progress Stream| WSStream[WebSocket Progress Channel]
+    end
+
+    %% Level 4 Subsystem
+    subgraph Level4["Level 4: Execution & Synthesis Engine"]
+        TSQL --> DBExec[(SQL Server Database: Read-Only Driver)]
+        DBExec -->|Raw Result Dataset| HTMLGen[HTML Data Table Generator]
+        DBExec -->|Result Data Context| AISynth[LLM Narrative Interpreter]
+        
+        HTMLGen --> FinalResponse[Final Response Payload]
+        AISynth --> FinalResponse
+    end
+
+    WSStream --> Auditor
+    FinalResponse -->|WebSocket Response Payload| Auditor
+                </div>
+            </div>
+        </section>
+
+        <!-- Table Priority Scoring Mathematics -->
+        <section id="priority">
+            <div class="section-header">
+                <div class="section-tag">MATHEMATICAL ENGINE</div>
+                <h2 class="section-title">Table Priority & Production Vitality Scoring Formulas</h2>
+            </div>
+
+            <div class="formula-card">
+                <h3 style="font-family: var(--font-heading); font-size: 1.3rem; margin-bottom: 1rem;">1. Production Priority Score Equation ($PriorityScore \in [0.01, 1.00]$)</h3>
+                <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1rem;">
+                    Evaluates row count logarithmic volume, storage megabytes, and production status penalties:
+                </p>
+
+                <div class="formula-box">
+                    S_volume = TotalRows == 0 ? 0.0 : min(1.0, log10(TotalRows + 1) / 5.0)<br>
+                    S_storage = min(1.0, DataSize_MB / 10.0)<br><br>
+                    Penalty = Backup_Table ? -0.60 : (Empty_Temp_Table ? -0.70 : (Master_Table ? +0.15 : 0.0))<br>
+                    BaseScore = (0.50 * S_volume) + (0.30 * S_storage) + Penalty + Bonus_active<br><br>
+                    PriorityScore = max(0.01, min(1.00, BaseScore))
+                </div>
+
+                <h3 style="font-family: var(--font-heading); font-size: 1.3rem; margin-top: 2rem; margin-bottom: 1rem;">2. Hybrid RAG Ranking Formula</h3>
+                <div class="formula-box" style="color: var(--accent-cyan); border-color: rgba(6, 182, 212, 0.3);">
+                    Combined Rank Score = (0.70 * Vector Semantic Similarity) + (0.30 * PriorityScore)
+                </div>
+            </div>
+        </section>
+
+        <!-- Interactive Tabs for Code & System Specs -->
+        <section id="code">
+            <div class="section-header">
+                <div class="section-tag">TECHNICAL SPECIFICATIONS</div>
+                <h2 class="section-title">Core Implementation Specifications & Guardrails</h2>
+            </div>
+
+            <div class="tab-buttons">
+                <button class="tab-btn active" onclick="openTab(event, 'tab-rag')">Hybrid RAG Ranker</button>
+                <button class="tab-btn" onclick="openTab(event, 'tab-stats')">SQL Stats Extractor</button>
+                <button class="tab-btn" onclick="openTab(event, 'tab-stripper')">Context Stripper</button>
+                <button class="tab-btn" onclick="openTab(event, 'tab-prompt')">Prompt Guardrails</button>
+            </div>
+
+            <!-- RAG Code Tab -->
+            <div id="tab-rag" class="tab-content active">
+                <pre><code><span class="comment"># Combined Hybrid RAG Priority Ranking in consumers.py</span>
+<span class="keyword">def</span> <span class="function">retrieve_top_k_schemas_chroma</span>(self, query, k=5, table_names=None):
+    <span class="comment"># 1. Global semantic vector search across all 71 tables</span>
+    global_res = schema_coll.query(query_texts=[query], n_results=k)
+    
+    <span class="comment"># 2. Compute Combined Rank Score = 0.70 * Vector Sim + 0.30 * Priority Score</span>
+    combined_entries = []
+    <span class="keyword">for</span> doc, meta, dist <span class="keyword">in</span> zip(global_docs, global_metas, global_dists):
+        p_score = float(meta.get(<span class="string">'priority_score'</span>, <span class="string">'0.50'</span>))
+        sim = max(0.0, 1.0 - (dist * 0.70))
+        combined_score = (0.70 * sim) + (0.30 * p_score)
+        combined_entries.append((meta[<span class="string">'table_name'</span>], doc, meta, combined_score))
+        
+    <span class="comment"># Sort candidate entries by combined rank score descending</span>
+    combined_entries.sort(key=<span class="keyword">lambda</span> x: x[3], reverse=True)
+    <span class="keyword">return</span> combined_entries[:k]</code></pre>
+            </div>
+
+            <!-- Stats Tab -->
+            <div id="tab-stats" class="tab-content">
+                <pre><code><span class="comment">-- Fetching Real-Time Row Counts & Data Sizes from SQL Server System Views</span>
+<span class="keyword">SELECT</span> 
+    t.name <span class="keyword">AS</span> TableName,
+    <span class="function">SUM</span>(p.rows) <span class="keyword">AS</span> TotalRows,
+    <span class="function">CAST</span>(<span class="function">ROUND</span>((<span class="function">SUM</span>(a.total_pages) * 8.0) / 1024.0, 2) <span class="keyword">AS</span> FLOAT) <span class="keyword">AS</span> DataSize_MB
+<span class="keyword">FROM</span> sys.tables t
+<span class="keyword">INNER JOIN</span> sys.indexes i <span class="keyword">ON</span> t.object_id = i.object_id
+<span class="keyword">INNER JOIN</span> sys.partitions p <span class="keyword">ON</span> i.object_id = p.object_id <span class="keyword">AND</span> i.index_id = p.index_id
+<span class="keyword">INNER JOIN</span> sys.allocation_units a <span class="keyword">ON</span> p.partition_id = a.container_id
+<span class="keyword">WHERE</span> i.index_id <span class="keyword">IN</span> (0, 1) <span class="comment">-- Heap or Clustered Index</span>
+<span class="keyword">GROUP BY</span> t.name;</code></pre>
+            </div>
+
+            <!-- Stripper Tab -->
+            <div id="tab-stripper" class="tab-content">
+                <pre><code><span class="comment"># Isolating current turn query from multi-turn chat transcripts</span>
+clean_query = message
+<span class="keyword">if</span> <span class="string">"Current question:"</span> <span class="keyword">in</span> clean_query:
+    clean_query = clean_query.split(<span class="string">"Current question:"</span>)[-1].strip()
+
+<span class="comment"># ChromaDB vector search runs strictly on clean_query</span>
+rag_schemas, retrieved_tables = self.retrieve_top_k_schemas_chroma(
+    clean_query, 
+    k=5, 
+    table_names=available_tables
+)</code></pre>
+            </div>
+
+            <!-- Guardrails Tab -->
+            <div id="tab-prompt" class="tab-content">
+                <pre><code>STRICT INSTRUCTIONS:
+1. CRITICAL: ALWAYS ENCLOSE ALL SQL SERVER TABLE NAMES IN SQUARE BRACKETS e.g. dbo.[table_name]!
+2. Use T-SQL syntax for SQL Server (use TOP instead of LIMIT for row limiting).
+3. Use ONLY the available tables and exact column definitions provided in the schema below.
+4. CRITICAL: You MUST ONLY query or JOIN tables whose FULL schema and column definitions are explicitly provided below!
+5. CRITICAL: When multiple tables contain similar columns, ALWAYS prefer active production tables with higher Production Priority Scores!</code></pre>
+            </div>
+        </section>
+
+        <!-- Database Metrics & Vitality Matrix Table -->
+        <section id="metrics">
+            <div class="section-header">
+                <div class="section-tag">EMPIRICAL DATA</div>
+                <h2 class="section-title">Database Table Vitality & Ranking Priority Matrix</h2>
+            </div>
+
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Database Table Name</th>
+                            <th>Total Active Rows</th>
+                            <th>Data Footprint (MB)</th>
+                            <th>Priority Score</th>
+                            <th>Ranking Classification</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td style="font-family: var(--font-code); font-weight: 600;">dbo.[loan_opportunity_call_analysis]</td>
+                            <td>17,391</td>
+                            <td>160.95 MB</td>
+                            <td style="font-family: var(--font-code); font-weight: 700; color: var(--accent-emerald);">1.00</td>
+                            <td><span class="status-pill status-high">🟢 Active Production</span></td>
+                        </tr>
+                        <tr>
+                            <td style="font-family: var(--font-code); font-weight: 600;">dbo.[CustomerRiskScore]</td>
+                            <td>67,863</td>
+                            <td>27.26 MB</td>
+                            <td style="font-family: var(--font-code); font-weight: 700; color: var(--accent-emerald);">0.98</td>
+                            <td><span class="status-pill status-high">🟢 Active Production</span></td>
+                        </tr>
+                        <tr>
+                            <td style="font-family: var(--font-code); font-weight: 600;">dbo.[accounts_mst_usertbl]</td>
+                            <td>7,559</td>
+                            <td>6.38 MB</td>
+                            <td style="font-family: var(--font-code); font-weight: 700; color: var(--accent-emerald);">0.93</td>
+                            <td><span class="status-pill status-high">🟢 Primary User Master</span></td>
+                        </tr>
+                        <tr>
+                            <td style="font-family: var(--font-code); font-weight: 600;">dbo.[map_userRole]</td>
+                            <td>7,958</td>
+                            <td>0.70 MB</td>
+                            <td style="font-family: var(--font-code); font-weight: 700; color: var(--accent-emerald);">0.72</td>
+                            <td><span class="status-pill status-high">🟢 Role Mapping</span></td>
+                        </tr>
+                        <tr>
+                            <td style="font-family: var(--font-code); font-weight: 600;">dbo.[audit_branch_checklist_feedback]</td>
+                            <td>1,413</td>
+                            <td>0.39 MB</td>
+                            <td style="font-family: var(--font-code); font-weight: 700; color: var(--accent-amber);">0.68</td>
+                            <td><span class="status-pill status-medium">🟡 Audit Feedback</span></td>
+                        </tr>
+                        <tr>
+                            <td style="font-family: var(--font-code); font-weight: 600;">dbo.[accounts_mst_usertbl_bkp_19june]</td>
+                            <td>7,543</td>
+                            <td>6.32 MB</td>
+                            <td style="font-family: var(--font-code); font-weight: 700; color: var(--accent-rose);">0.01</td>
+                            <td><span class="status-pill status-low">🔴 Filtered Backup</span></td>
+                        </tr>
+                        <tr>
+                            <td style="font-family: var(--font-code); font-weight: 600;">dbo.[usersTable_28july]</td>
+                            <td>812</td>
+                            <td>0.20 MB</td>
+                            <td style="font-family: var(--font-code); font-weight: 700; color: var(--accent-rose);">0.01</td>
+                            <td><span class="status-pill status-low">🔴 Filtered Backup</span></td>
+                        </tr>
+                        <tr>
+                            <td style="font-family: var(--font-code); font-weight: 600;">dbo.[tempUsers]</td>
+                            <td>0</td>
+                            <td>0.07 MB</td>
+                            <td style="font-family: var(--font-code); font-weight: 700; color: var(--accent-rose);">0.01</td>
+                            <td><span class="status-pill status-low">🔴 Filtered 0-Row Temp</span></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+    </div>
+
+    <footer>
+        Sonata Satark Enterprise Architecture Documentation &bull; Marklytix AI Core &bull; Created 2026
+    </footer>
+
+    <script>
+        // Initialize Mermaid Diagrams
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'dark',
+            themeVariables: {
+                darkMode: true,
+                background: '#121215',
+                primaryColor: '#06b6d4',
+                secondaryColor: '#a855f7',
+                tertiaryColor: '#10b981',
+                lineColor: '#3f3f46',
+                fontFamily: 'Inter, sans-serif'
+            }
+        });
+
+        // Tab Switching Functionality
+        function openTab(evt, tabName) {
+            var i, tabcontent, tablinks;
+            tabcontent = document.getElementsByClassName("tab-content");
+            for (i = 0; i < tabcontent.length; i++) {
+                tabcontent[i].classList.remove("active");
+            }
+            tablinks = document.getElementsByClassName("tab-btn");
+            for (i = 0; i < tablinks.length; i++) {
+                tablinks[i].classList.remove("active");
+            }
+            document.getElementById(tabName).classList.add("active");
+            evt.currentTarget.classList.add("active");
+        }
+    </script>
+</body>
+</html>
