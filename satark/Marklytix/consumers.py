@@ -648,12 +648,26 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
         print(f"💾 Cache Key: {cache_key}")
         print("")
         
+        # Level -1: Pre-Classification Prompt Enhancer Agent
+        print("🔍" + "-" * 50 + "🔍")
+        print("🎯 LEVEL -1: PRE-CLASSIFICATION PROMPT ENHANCER 🎯")
+        print("🔍" + "-" * 50 + "🔍")
+        search_query, was_expanded, expand_time = self.expand_user_prompt(message)
+        
+        if was_expanded:
+            print(f"⚡ [PROMPT EXPANDER SUCCESS] Expanded in {expand_time:.3f}s:")
+            print(f"   Original: \"{message}\"")
+            print(f"   Expanded: \"{search_query}\"")
+        else:
+            print(f"ℹ️ [PROMPT EXPANDER BYPASSED] Query is already detailed/complete ({len(message.split())} words).")
+        print("")
+        
         # Level 1: Category Classification
         print("🔍" + "-" * 50 + "🔍")
         print("🎯 LEVEL 1: CATEGORY CLASSIFICATION 🎯")
         print("🔍" + "-" * 50 + "🔍")
         start_time_1 = datetime.now()
-        category_result = self.classify_category_hybrid(message, self.search_tree)
+        category_result = self.classify_category_hybrid(search_query, self.search_tree)
         end_time_1 = datetime.now()
         
         print(f"✅ Category: {category_result['category']} (confidence: {category_result['confidence']:.2f})")
@@ -692,7 +706,7 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
             print("🔍" + "-" * 50 + "🔍")
             start_time_2 = datetime.now()
             subcategory_result = self.classify_subcategory_hybrid(
-                message, 
+                search_query, 
                 category_result['category'], 
                 self.search_tree
             )
@@ -709,8 +723,16 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
             print("🎯 LEVEL 3: TABLE SELECTION & QUERY GENERATION 🎯")
             print("🔍" + "-" * 50 + "🔍")
             start_time_3 = datetime.now()
+            
+            effective_context = context_message
+            if was_expanded and "Current question:" in context_message:
+                ctx_prefix = context_message.split("Current question:")[0]
+                effective_context = f"{ctx_prefix}Current question: {search_query}"
+            elif was_expanded:
+                effective_context = search_query
+
             table_result = self.select_tables_with_specialized_prompt(
-                context_message,
+                effective_context,
                 category_result['category'],
                 subcategory_result['subcategory'],
                 self.search_tree
@@ -869,6 +891,12 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
             
             # Hierarchical search details — omit for general chitchat so the frontend hides the Process Log tab
             'hierarchical_search': None if category_result['category'].lower().strip() == 'general' else {
+                'level_minus_1_expander': {
+                    'original_query': message,
+                    'expanded_query': search_query,
+                    'was_expanded': was_expanded,
+                    'time_taken': expand_time
+                },
                 'level_0_rag_tables': table_result.get('level_0_rag_tables', {
                     'tables_fetched': [f"dbo.[{t}]" for t in table_result.get('tables', [])[:5]] if table_result.get('tables') else [],
                     'raw_table_names': table_result.get('tables', [])[:5],
@@ -1685,12 +1713,15 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
 
 
 
-    def retrieve_top_k_schemas_chroma(self, query, k=5, table_names=None):
+    def retrieve_top_k_schemas_chroma(self, query, k=5, prompt_k=2, table_names=None):
         """
         Hybrid Global + Subcategory RAG Table Schema Retrieval:
         Combines global semantic vector search across all database tables
         with subcategory-scoped table lookups to ensure the correct tables
         are NEVER missed due to high-level misclassification.
+        
+        Retrieves top k (5) tables from vector store, but passes only top prompt_k (2)
+        highest priority table schemas to the final LLM prompt to prevent prompt bloating.
         """
         if not HAS_CHROMADB:
             return "", []
@@ -1720,7 +1751,7 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
                     subcat_docs = sub_res['documents'][0]
                     subcat_metas = sub_res['metadatas'][0]
 
-            # Merge & Priority Rank: Combined Rank Score = 0.70 * Vector Similarity + 0.30 * Priority Score
+            # Step 1: Pure Vector Similarity Retrieval for Top k (5) RAG candidates
             global_dists = global_res.get('distances', [[]])[0] if global_res and global_res.get('distances') else []
             subcat_dists = sub_res.get('distances', [[]])[0] if sub_res and sub_res.get('distances') else []
 
@@ -1733,8 +1764,7 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
                     seen_tables.add(tbl)
                     p_score = float(meta.get('priority_score', '0.50'))
                     sim = round(max(0.0, 1.0 - (dist * 0.70)), 4)
-                    combined_score = round((0.70 * sim) + (0.30 * p_score), 4)
-                    combined_entries.append((tbl, doc, meta, combined_score))
+                    combined_entries.append((tbl, doc, meta, sim, p_score))
 
             for doc, meta, dist in zip(subcat_docs, subcat_metas, subcat_dists if subcat_dists else [0.5]*len(subcat_docs)):
                 tbl = meta.get('table_name', '')
@@ -1742,18 +1772,38 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
                     seen_tables.add(tbl)
                     p_score = float(meta.get('priority_score', '0.50'))
                     sim = round(max(0.0, 1.0 - (dist * 0.70)), 4)
-                    combined_score = round((0.70 * sim) + (0.30 * p_score), 4)
-                    combined_entries.append((tbl, doc, meta, combined_score))
+                    combined_entries.append((tbl, doc, meta, sim, p_score))
 
-            # Sort candidate entries by combined rank score descending
+            # Sort candidate entries strictly by 100% Vector Similarity descending for RAG retrieval
             combined_entries.sort(key=lambda x: x[3], reverse=True)
-            final_entries = combined_entries[:k]
-            retrieved_tables = [entry[0] for entry in final_entries]
-            table_list_formatted = [f"dbo.[{t}] (Rank: {entry[3]:.2f}, Priority: {entry[2].get('priority_score', 'N/A')})" for t, entry in zip(retrieved_tables, final_entries)]
-            print(f"🎯 [RAG TABLES RETRIEVED BY PRIORITY RANKING] ({len(retrieved_tables)} tables): {table_list_formatted}")
+            top_k_semantic_entries = combined_entries[:k]
+            retrieved_tables = [entry[0] for entry in top_k_semantic_entries]
+            table_list_formatted = [f"dbo.[{t}] (Similarity: {entry[3]:.2f}, Priority: {entry[4]:.2f})" for t, entry in zip(retrieved_tables, top_k_semantic_entries)]
+            print(f"🎯 [RAG TOP 5 SEMANTIC TABLES RETRIEVED FROM CHROMADB] ({len(retrieved_tables)} tables): {table_list_formatted}")
+
+            # Step 2: Rank top prompt_k (2) schemas from the retrieved top 5 semantic candidates
+            query_words = [w.lower() for w in query.split() if len(w) > 3]
+            ranked_prompt_candidates = []
+            for tbl, doc, meta, sim, p_score in top_k_semantic_entries:
+                # Keyword relevance boost if user terms appear in table name or document text
+                kw_boost = 0.0
+                tbl_lower = tbl.lower()
+                doc_lower = doc.lower()
+                for qw in query_words:
+                    if qw in tbl_lower or qw in doc_lower:
+                        kw_boost += 0.15
+                
+                final_prompt_score = round((0.75 * sim) + (0.15 * p_score) + min(kw_boost, 0.30), 4)
+                ranked_prompt_candidates.append((tbl, doc, meta, final_prompt_score))
+
+            # Sort top 5 semantic candidates by final prompt score descending
+            ranked_prompt_candidates.sort(key=lambda x: x[3], reverse=True)
+            prompt_entries = ranked_prompt_candidates[:prompt_k]
+            prompt_tables = [entry[0] for entry in prompt_entries]
+            print(f"⚡ [TOP {len(prompt_tables)} PRIORITY TABLE SCHEMAS PASSED TO LLM PROMPT]: {[f'dbo.[{t}]' for t in prompt_tables]}")
 
             schemas = []
-            for tbl, doc, meta, score in final_entries:
+            for tbl, doc, meta, score in prompt_entries:
                 clean_doc = doc.split("Prompt Schema Context:")[0].strip() if "Prompt Schema Context:" in doc else doc.strip()
                 schemas.append(f"--- Table Schema: dbo.[{tbl}] ---\n{clean_doc}")
 
@@ -1960,13 +2010,55 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
         except Exception as e_glob:
             print(f"[ChromaDB] Subcategory global search error: {e_glob}")
 
-        return {
-            'subcategory': 'general',
-            'confidence': 0.1,
-            'method': 'vector_chroma',
-            'reasoning': 'Subcategory vector search fallback'
-        }
+    def expand_user_prompt(self, message):
+        """
+        Level -1: Pre-Classification Prompt Enhancer Agent
+        Expands shorthand/incomplete queries (e.g. 'patna collection july')
+        into fully disambiguated natural language intents for classification and RAG retrieval.
+        Bypasses expansion if query is already detailed (>=8 words or >=60 chars).
+        """
+        raw_query = message.strip()
+        words = raw_query.split()
+        
+        # Smart Bypass: If prompt is already detailed (>=8 words or >=60 chars), return as-is
+        if len(words) >= 8 or len(raw_query) >= 60:
+            return raw_query, False, 0.0
 
+        start_t = datetime.now()
+        try:
+            expander_prompt = f"""You are an expert SQL domain intent expander for an enterprise audit & credit risk database system.
+Convert the user's shorthand input into a clear, complete, fully-described natural language query for database classification and schema retrieval.
+
+RULES:
+1. Expand acronyms/shorthand terms (e.g., 'patna' -> 'Patna branch', 'collection' -> 'collection amount and collection rate percentage', 'npa' -> 'non-performing asset').
+2. Explicitly specify intent, metrics, and date/time parameters if implied.
+3. Keep the expanded query concise, professional, and natural (15-25 words max).
+4. Do NOT generate SQL code or markdown blocks. Output ONLY the expanded natural language query text.
+
+SHORTHAND QUERY: "{raw_query}"
+
+EXPANDED QUERY:"""
+
+            response = self.query_model.generate_content([expander_prompt])
+            expanded_text = response.text.strip()
+            
+            # Clean up quotes or markdown if present
+            if expanded_text.startswith('"') and expanded_text.endswith('"'):
+                expanded_text = expanded_text[1:-1].strip()
+            if expanded_text.startswith('```') and expanded_text.endswith('```'):
+                expanded_text = expanded_text.replace('```', '').strip()
+            if 'EXPANDED QUERY:' in expanded_text:
+                expanded_text = expanded_text.split('EXPANDED QUERY:')[-1].strip()
+                
+            elapsed = round((datetime.now() - start_t).total_seconds(), 3)
+            
+            if expanded_text and len(expanded_text) >= len(raw_query):
+                return expanded_text, True, elapsed
+            return raw_query, False, elapsed
+        except Exception as e:
+            print(f"⚠️ [PROMPT EXPANDER FALLBACK]: {e}")
+            elapsed = round((datetime.now() - start_t).total_seconds(), 3)
+            return raw_query, False, elapsed
 
 
     def classify_category_hybrid(self, message, search_tree):
@@ -2656,12 +2748,14 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
             if "Current question:" in clean_query:
                 clean_query = clean_query.split("Current question:")[-1].strip()
 
-            rag_schemas, retrieved_tables = self.retrieve_top_k_schemas_chroma(clean_query, k=5, table_names=available_tables)
+            rag_schemas, retrieved_tables = self.retrieve_top_k_schemas_chroma(clean_query, k=5, prompt_k=2, table_names=available_tables)
             end_time_0 = datetime.now()
             rag_time_taken = round((end_time_0 - start_time_0).total_seconds(), 3)
             
             tables_fetched_formatted = [f"dbo.[{t}]" for t in retrieved_tables] if retrieved_tables else [f"dbo.[{t}]" for t in available_tables[:5]]
-            print(f"🎯 [RAG TABLES TAKEN] ({len(tables_fetched_formatted)} tables): {tables_fetched_formatted}")
+            prompt_tables_formatted = tables_fetched_formatted[:2]
+            print(f"🎯 [RAG TABLES RETRIEVED FROM CHROMADB] ({len(tables_fetched_formatted)} tables): {tables_fetched_formatted}")
+            print(f"⚡ [TOP 2 PRIORITY TABLE SCHEMAS PASSED TO LLM PROMPT]: {prompt_tables_formatted}")
             print(f"⏱️  Time taken: {rag_time_taken:.3f} seconds")
             print("")
             
@@ -2682,10 +2776,9 @@ You are an expert SQL Server database developer. Generate a precise, valid T-SQL
 
 STRICT INSTRUCTIONS:
 1. CRITICAL: ALWAYS ENCLOSE ALL SQL SERVER TABLE NAMES IN SQUARE BRACKETS e.g. dbo.[table_name], especially when table names contain spaces or special characters!
-2. Use T-SQL syntax for SQL Server (use TOP instead of LIMIT for row limiting).
-3. Use ONLY the available tables and exact column definitions provided in the schema below.
-4. CRITICAL: You MUST ONLY query or JOIN tables whose FULL schema and column definitions are explicitly provided below! Connected Tables lists are for relational awareness only; NEVER guess columns or query a table whose column list is not provided below!
-5. CRITICAL: When multiple tables contain similar columns (e.g. master tables vs backup _bkp tables), ALWAYS prefer active production tables with higher Production Priority Scores!
+2. Use ONLY the available tables and exact column definitions provided in the schema below.
+3. CRITICAL: You MUST ONLY query or JOIN tables whose FULL schema and column definitions are explicitly provided below! Connected Tables lists are for relational awareness only; NEVER guess columns or query a table whose column list is not provided below!
+4. CRITICAL: When multiple tables contain similar columns (e.g. master tables vs backup _bkp tables), ALWAYS prefer active production tables with higher Production Priority Scores!
 
 AVAILABLE TABLE SCHEMAS:
 {rag_schemas} 
@@ -2737,21 +2830,27 @@ Respond strictly with ONLY the executable T-SQL query block.
             
             # Validate the query
             print("🔍 Validating generated SQL query...")
-            if not query or query.lower().startswith('select') == False:
+            clean_q = query.strip().lower()
+            is_valid_sql = any(clean_q.startswith(kw) for kw in ['select', 'with', 'exec', 'declare'])
+            
+            if not query or not is_valid_sql:
                 print("⚠️  Query validation failed, using fallback query")
-                # Fallback to basic query
-                query = self.generate_basic_sql_query(message, available_tables, category, subcategory)
+                # Fallback to basic query using top 2 RAG tables
+                fallback_tables = retrieved_tables[:2] if retrieved_tables else available_tables[:2]
+                query = self.generate_basic_sql_query(message, fallback_tables, category, subcategory)
                 confidence = 0.4
                 reasoning = 'Specialized prompt failed, using fallback query'
+                used_tables = fallback_tables
             else:
                 print("✅ Query validation passed")
                 confidence = 0.9
                 reasoning = f'Generated query using specialized {subcategory} prompt'
+                used_tables = retrieved_tables[:2] if retrieved_tables else available_tables[:2]
             
             print(f"🎯 Final result: {confidence:.2f} confidence using {reasoning}")
             return {
                 'method': 'specialized_prompt',
-                'tables': available_tables,
+                'tables': used_tables,
                 'query': query,
                 'confidence': confidence,
                 'reasoning': reasoning,

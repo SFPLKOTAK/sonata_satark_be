@@ -531,6 +531,21 @@
             </div>
 
             <div class="pipeline-grid">
+                <!-- Level -1 -->
+                <div class="level-card l-1" style="border-color: rgba(245, 158, 11, 0.4); background: radial-gradient(circle at top right, rgba(245, 158, 11, 0.1), transparent 70%), var(--bg-card);">
+                    <div class="level-header">
+                        <span class="level-pill" style="background: var(--accent-amber); color: #000;">Level -1</span>
+                        <span style="font-size: 0.75rem; color: var(--accent-amber);">Prompt Enhancer</span>
+                    </div>
+                    <h3 class="level-title">Pre-Classification Prompt Expansion</h3>
+                    <p class="level-desc">Expands shorthand inputs (e.g. 'patna collection july') into fully disambiguated natural language intents using Uber's Query Parsing paradigm.</p>
+                    <ul class="feature-list">
+                        <li class="feature-item"><span class="feature-bullet">›</span> Smart Bypass (>8 words / >60 chars)</li>
+                        <li class="feature-item"><span class="feature-bullet">›</span> Metric & Entity Disambiguation</li>
+                        <li class="feature-item"><span class="feature-bullet">›</span> Fallback Raw Prompt Preserver</li>
+                    </ul>
+                </div>
+
                 <!-- Level 0 -->
                 <div class="level-card l0">
                     <div class="level-header">
@@ -698,9 +713,19 @@ graph TD
                     PriorityScore = max(0.01, min(1.00, BaseScore))
                 </div>
 
-                <h3 style="font-family: var(--font-heading); font-size: 1.3rem; margin-top: 2rem; margin-bottom: 1rem;">2. Hybrid RAG Ranking Formula</h3>
+                <h3 style="font-family: var(--font-heading); font-size: 1.3rem; margin-top: 2rem; margin-bottom: 1rem;">2. 2-Step Semantic First RAG Retrieval & Prompt Slicing Architecture</h3>
+                <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1rem;">
+                    <strong>Step 1: Pure Semantic Vector Retrieval ($k=5$)</strong> — Retrieves top 5 candidate tables strictly based on 100% vector similarity distance:
+                </p>
                 <div class="formula-box" style="color: var(--accent-cyan); border-color: rgba(6, 182, 212, 0.3);">
-                    Combined Rank Score = (0.70 * Vector Semantic Similarity) + (0.30 * PriorityScore)
+                    Vector Similarity (Sim) = max(0.0, 1.0 - (dist * 0.70))
+                </div>
+
+                <p style="font-size: 0.9rem; color: var(--text-muted); margin-top: 1rem; margin-bottom: 1rem;">
+                    <strong>Step 2: Prompt Slicing & Keyword Boost ($prompt\_k=2$)</strong> — Among top 5 semantic candidates, assigns query keyword match boosts (+0.15 per match) and selects top 2 schemas for LLM prompt:
+                </p>
+                <div class="formula-box" style="color: var(--accent-emerald); border-color: rgba(16, 185, 129, 0.3);">
+                    Final Prompt Score = (0.75 * Sim) + (0.15 * PriorityScore) + min(KeywordBoost, 0.30)
                 </div>
             </div>
         </section>
@@ -713,7 +738,8 @@ graph TD
             </div>
 
             <div class="tab-buttons">
-                <button class="tab-btn active" onclick="openTab(event, 'tab-rag')">Hybrid RAG Ranker</button>
+                <button class="tab-btn active" onclick="openTab(event, 'tab-rag')">2-Step RAG Ranker</button>
+                <button class="tab-btn" onclick="openTab(event, 'tab-expander')">Level -1 Prompt Enhancer</button>
                 <button class="tab-btn" onclick="openTab(event, 'tab-stats')">SQL Stats Extractor</button>
                 <button class="tab-btn" onclick="openTab(event, 'tab-stripper')">Context Stripper</button>
                 <button class="tab-btn" onclick="openTab(event, 'tab-prompt')">Prompt Guardrails</button>
@@ -721,22 +747,43 @@ graph TD
 
             <!-- RAG Code Tab -->
             <div id="tab-rag" class="tab-content active">
-                <pre><code><span class="comment"># Combined Hybrid RAG Priority Ranking in consumers.py</span>
-<span class="keyword">def</span> <span class="function">retrieve_top_k_schemas_chroma</span>(self, query, k=5, table_names=None):
-    <span class="comment"># 1. Global semantic vector search across all 71 tables</span>
+                <pre><code><span class="comment"># 2-Step Semantic First RAG Retrieval & Top 2 Prompt Slicing in consumers.py</span>
+<span class="keyword">def</span> <span class="function">retrieve_top_k_schemas_chroma</span>(self, query, k=5, prompt_k=2, table_names=None):
+    <span class="comment"># 1. Global semantic vector search across Chroma vector store</span>
     global_res = schema_coll.query(query_texts=[query], n_results=k)
     
-    <span class="comment"># 2. Compute Combined Rank Score = 0.70 * Vector Sim + 0.30 * Priority Score</span>
-    combined_entries = []
-    <span class="keyword">for</span> doc, meta, dist <span class="keyword">in</span> zip(global_docs, global_metas, global_dists):
-        p_score = float(meta.get(<span class="string">'priority_score'</span>, <span class="string">'0.50'</span>))
-        sim = max(0.0, 1.0 - (dist * 0.70))
-        combined_score = (0.70 * sim) + (0.30 * p_score)
-        combined_entries.append((meta[<span class="string">'table_name'</span>], doc, meta, combined_score))
-        
-    <span class="comment"># Sort candidate entries by combined rank score descending</span>
+    <span class="comment"># Step 1: Sort candidates strictly by 100% Vector Similarity for top k (5) RAG retrieval</span>
     combined_entries.sort(key=<span class="keyword">lambda</span> x: x[3], reverse=True)
-    <span class="keyword">return</span> combined_entries[:k]</code></pre>
+    top_k_semantic_entries = combined_entries[:k]
+    retrieved_tables = [entry[0] <span class="keyword">for</span> entry <span class="keyword">in</span> top_k_semantic_entries]
+
+    <span class="comment"># Step 2: Calculate keyword boost & select top prompt_k (2) schemas for final LLM prompt</span>
+    ranked_prompt_candidates = []
+    <span class="keyword">for</span> tbl, doc, meta, sim, p_score <span class="keyword">in</span> top_k_semantic_entries:
+        kw_boost = 0.15 * count_query_matches(query, tbl, doc)
+        final_prompt_score = (0.75 * sim) + (0.15 * p_score) + min(kw_boost, 0.30)
+        ranked_prompt_candidates.append((tbl, doc, meta, final_prompt_score))
+
+    ranked_prompt_candidates.sort(key=<span class="keyword">lambda</span> x: x[3], reverse=True)
+    prompt_entries = ranked_prompt_candidates[:prompt_k]
+    <span class="keyword">return</span> "\n\n".join(schemas), retrieved_tables</code></pre>
+            </div>
+
+            <!-- Prompt Expander Tab -->
+            <div id="tab-expander" class="tab-content">
+                <pre><code><span class="comment"># Level -1: Pre-Classification Prompt Enhancer Agent in consumers.py</span>
+<span class="keyword">def</span> <span class="function">expand_user_prompt</span>(self, message):
+    <span class="comment">"""Expands shorthand queries (e.g. 'patna collection july') into explicit prompts"""</span>
+    raw_query = message.strip()
+    words = raw_query.split()
+    
+    <span class="comment"># Smart bypass (>8 words or >60 chars bypasses LLM for 0ms latency)</span>
+    <span class="keyword">if</span> len(words) >= 8 <span class="keyword">or</span> len(raw_query) >= 60:
+        <span class="keyword">return</span> raw_query, False, 0.0
+
+    prompt = <span class="string">f"Convert shorthand query into explicit natural language: '{raw_query}'"</span>
+    expanded_text = self.query_model(prompt, max_tokens=150)
+    <span class="keyword">return</span> expanded_text, True, elapsed_time</code></pre>
             </div>
 
             <!-- Stats Tab -->
