@@ -545,7 +545,7 @@ def submit_query_feedback(request):
         chat_id = data.get("chat_id")
         question = (data.get("question") or "").strip()
         generated_query = (data.get("generated_query") or "").strip()
-        rating = (data.get("rating") or "like").lower()
+        category = data.get("category") or ""
         subcategory = data.get("subcategory") or ""
         tables_used = data.get("tables_used") or ""
         feedback_text = data.get("feedback_text") or ""
@@ -563,8 +563,29 @@ def submit_query_feedback(request):
             pass
             
         indexed = False
-        # 2. If positive rating and query is present, index into ChromaDB marklytix_sql_examples
+        # 2. If positive rating and query is present, persist into central SQL Server table dbo.Marklytix_VerifiedQueryExamples
         if rating in ("like", "thumbs_up", "positive", "verified") and question and generated_query:
+            try:
+                existing = _exec("SELECT Id FROM dbo.Marklytix_VerifiedQueryExamples WHERE LOWER(UserQuestion) = LOWER(%s)", [question], fetch="one")
+                if existing:
+                    _exec("""
+                        UPDATE dbo.Marklytix_VerifiedQueryExamples
+                        SET GeneratedSQL = %s, Category = COALESCE(NULLIF(%s, ''), Category),
+                            Subcategory = COALESCE(NULLIF(%s, ''), Subcategory), TablesUsed = COALESCE(NULLIF(%s, ''), TablesUsed),
+                            Rating = %s, FeedbackComments = %s, ModifiedDate = GETDATE(), IsActive = 1
+                        WHERE Id = %s
+                    """, [generated_query, category, subcategory, tables_used, rating, feedback_text, existing[0]], fetch="none")
+                else:
+                    _exec("""
+                        INSERT INTO dbo.Marklytix_VerifiedQueryExamples
+                        (UserQuestion, GeneratedSQL, Category, Subcategory, TablesUsed, Rating, FeedbackComments, IsActive)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, 1)
+                    """, [question, generated_query, category, subcategory, tables_used, rating, feedback_text], fetch="none")
+                print(f"💾 [CENTRAL DB SYNC] Persisted verified SQL example into dbo.Marklytix_VerifiedQueryExamples")
+            except Exception as dbe2:
+                print(f"⚠️ [CENTRAL DB SYNC ERROR]: {dbe2}")
+
+            # 3. Upsert into local ChromaDB marklytix_sql_examples collection for instant local vector search
             storage_dir = os.path.join(os.path.dirname(__file__), "scratch", "chroma_db_storage")
             if os.path.exists(storage_dir):
                 import chromadb

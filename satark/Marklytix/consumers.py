@@ -1818,10 +1818,49 @@ CORRECTED T-SQL QUERY:"""
                         subcat_coll.delete(ids=existing_sub_ids)
                 except Exception:
                     pass
-            HierarchicalSearchConsumer._subcat_collection = subcat_coll
+            # 4. Gap 5: Sync Verified SQL Examples from dbo.Marklytix_VerifiedQueryExamples
+            try:
+                sql_coll = get_or_create_clean_collection("marklytix_sql_examples")
+                db_eng = getattr(self, 'engine', None) or get_shared_db_engine()
+                with db_eng.begin() as conn:
+                    sql_res = conn.execute(text("""
+                        SELECT UserQuestion, GeneratedSQL, Category, Subcategory, TablesUsed, Rating
+                        FROM dbo.Marklytix_VerifiedQueryExamples
+                        WHERE IsActive = 1
+                    """)).fetchall()
+                    
+                    if sql_res:
+                        ex_ids, ex_docs, ex_metas = [], [], []
+                        for row in sql_res:
+                            q_text = row[0] or ""
+                            sql_text = row[1] or ""
+                            cat_val = row[2] or ""
+                            sub_val = row[3] or ""
+                            tbls_val = row[4] or ""
+                            rating_val = row[5] or "like"
+                            
+                            if q_text and sql_text:
+                                doc_id = f"sql_ex_{hashlib.md5(f'{q_text}_{sql_text}'.encode('utf-8')).hexdigest()[:12]}"
+                                doc_text = f"User Question: {q_text}\nTarget Subcategory: {sub_val}\nVerified T-SQL Query:\n{sql_text}"
+                                
+                                ex_ids.append(doc_id)
+                                ex_docs.append(doc_text)
+                                ex_metas.append({
+                                    "question": q_text,
+                                    "sql_query": sql_text,
+                                    "category": cat_val,
+                                    "subcategory": sub_val.lower() if sub_val else "",
+                                    "tables_used": tbls_val,
+                                    "rating": rating_val
+                                })
+                        if ex_ids:
+                            sql_coll.upsert(ids=ex_ids, documents=ex_docs, metadatas=ex_metas)
+                            print(f"🎉 [ChromaDB Auto-Syncer] Synced {len(ex_ids)} verified SQL few-shot examples from SQL Server into ChromaDB!")
+            except Exception as e_fewshot:
+                print(f"⚠️ [ChromaDB Auto-Syncer Few-Shot SQL Sync Error]: {e_fewshot}")
 
             HierarchicalSearchConsumer._chroma_initialized = True
-            print("✅ [ChromaDB Auto-Syncer] WebSocket connection auto-sync completed successfully with ENRICHED Column Schemas!")
+            print("✅ [ChromaDB Auto-Syncer] WebSocket connection auto-sync completed successfully with ENRICHED Column Schemas & Verified Few-Shots!")
 
 
 
