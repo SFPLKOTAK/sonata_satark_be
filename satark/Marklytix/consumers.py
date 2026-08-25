@@ -557,6 +557,146 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
             self.engine.dispose()
         print(f"Disconnected from hierarchical search: {self.prompt_name}")
 
+    def execute_sql_single_attempt(self, sql_query):
+        """Helper to attempt execution of a single T-SQL query against SQL Server."""
+        if not sql_query or not isinstance(sql_query, str):
+            raise ValueError("Empty or invalid SQL query provided.")
+            
+        clean_sql = ensure_square_bracketed_tables(sql_query)
+        query_strip = clean_sql.strip().upper()
+        
+        if query_strip.startswith('EXEC') or query_strip.startswith('EXECUTE'):
+            # Stored procedure execution logic with fallbacks
+            try:
+                return pd.read_sql(clean_sql, self.engine)
+            except Exception as e1:
+                try:
+                    raw_conn = self.engine.raw_connection()
+                    try:
+                        return pd.read_sql(clean_sql, raw_conn)
+                    finally:
+                        raw_conn.close()
+                except Exception as e2:
+                    return pd.read_sql(text(clean_sql), self.engine)
+        else:
+            # Regular SELECT query execution with raw connection fallback
+            try:
+                return pd.read_sql_query(text(clean_sql), self.engine)
+            except Exception as e_reg:
+                raw_conn = self.engine.raw_connection()
+                try:
+                    return pd.read_sql(clean_sql, raw_conn)
+                finally:
+                    raw_conn.close()
+
+    def execute_sql_with_self_correction(self, initial_sql, user_query, schemas_context="", max_retries=2):
+        """
+        Gap 4 — Recursive SQL Validation & Self-Correction Agent
+        Executes initial_sql against SQL Server. On T-SQL error (e.g. invalid column name,
+        invalid object, ambiguous join key, syntax error), captures error traceback from database engine,
+        constructs self-correction prompt with valid schema DDL, and queries LLM to self-correct SQL.
+        Loops up to max_retries (default 2 retries = 3 total attempts).
+        """
+        current_sql = initial_sql
+        last_error = None
+        attempt_history = []
+
+        for attempt in range(1, max_retries + 2):
+            try:
+                print(f"🔄 [SQL VALIDATION AGENT] Attempt {attempt}/{max_retries + 1}: Executing T-SQL...")
+                current_sql = ensure_square_bracketed_tables(current_sql)
+                
+                db_results = self.execute_sql_single_attempt(current_sql)
+                
+                if attempt > 1:
+                    print(f"🎉 [SQL SELF-CORRECTION AGENT] Fixed SQL query executed successfully on Attempt {attempt}!")
+                    try:
+                        self.send(json.dumps({
+                            'type': 'progress',
+                            'message': f"✅ SQL Self-Correction Agent recovered query successfully on attempt {attempt}."
+                        }))
+                    except Exception:
+                        pass
+                
+                return db_results, current_sql, attempt_history
+            except Exception as e:
+                error_str = str(e)
+                last_error = error_str
+                attempt_history.append({
+                    'attempt': attempt,
+                    'sql': current_sql,
+                    'error': error_str
+                })
+                
+                print("💥" + "=" * 48 + "💥")
+                print(f"❌ [SQL VALIDATION AGENT] Attempt {attempt}/{max_retries + 1} Failed: {error_str[:140]}")
+                print("💥" + "=" * 48 + "💥")
+                
+                if attempt <= max_retries:
+                    try:
+                        self.send(json.dumps({
+                            'type': 'progress',
+                            'message': f"⚠️ SQL Error on attempt {attempt}/{max_retries + 1}: {error_str[:70]}... Triggering AI Self-Correction."
+                        }))
+                    except Exception:
+                        pass
+                    
+                    print(f"🔧 [SQL SELF-CORRECTION] Re-prompting LLM to correct T-SQL error (Retry {attempt}/{max_retries})...")
+                    
+                    correction_prompt = f"""You are an expert T-SQL Database Specialist for Microsoft SQL Server.
+A generated T-SQL query failed execution on the database engine. Your task is to fix the SQL query so it runs cleanly and accurately on SQL Server.
+
+USER ORIGINAL QUESTION:
+"{user_query}"
+
+FAILED SQL QUERY:
+```sql
+{current_sql}
+```
+
+DATABASE ENGINE ERROR (T-SQL EXCEPTION):
+{error_str}
+
+AVAILABLE VALID TABLE SCHEMAS & COLUMN MAPS:
+{schemas_context if schemas_context else "Refer to standard database tables."}
+
+RULES FOR CORRECTION:
+1. Carefully analyze the exact error message (e.g. invalid column name, invalid object/table, ambiguous column name, syntax error).
+2. If a column name is invalid, substitute it with the valid column name from the available schema.
+3. Ensure all table names are enclosed in square brackets e.g. dbo.[TableName].
+4. If a column appears in multiple joined tables, explicitly alias it e.g. t1.[BranchID].
+5. Do NOT include markdown text explanation outside the code block. Output ONLY the corrected executable T-SQL query inside ```sql ... ``` code block.
+
+CORRECTED T-SQL QUERY:"""
+
+                    try:
+                        resp = self.query_model.generate_content([correction_prompt])
+                        raw_corrected = resp.text.strip()
+                        
+                        # Extract SQL block
+                        sql_match = re.search(r'```sql\s*(.*?)\s*```', raw_corrected, re.DOTALL | re.IGNORECASE)
+                        if sql_match:
+                            corrected_sql = sql_match.group(1).strip()
+                        else:
+                            corrected_sql = raw_corrected.replace('```', '').strip()
+                            if 'SELECT' in corrected_sql.upper() or 'EXEC' in corrected_sql.upper():
+                                select_idx = max(corrected_sql.upper().find('SELECT'), corrected_sql.upper().find('EXEC'))
+                                corrected_sql = corrected_sql[select_idx:].strip()
+
+                        if corrected_sql and corrected_sql != current_sql:
+                            print(f"⚡ [SQL SELF-CORRECTION AGENT] Generated corrected SQL:\n   {corrected_sql}")
+                            current_sql = corrected_sql
+                        else:
+                            print("⚠️ Self-correction agent generated identical or empty SQL, stopping retries.")
+                            break
+                    except Exception as corr_e:
+                        print(f"⚠️ Self-correction LLM call failed: {corr_e}")
+                        break
+                else:
+                    print("❌ Exceeded maximum self-correction retries.")
+
+        raise Exception(f"SQL execution failed after {max_retries + 1} attempts. Last error: {last_error}")
+
     def receive(self, text_data):
         _marklytix_search_local.active_consumer = self
         try:
@@ -750,10 +890,11 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
         
         # Execute the generated SQL query
         print("🔍" + "-" * 50 + "🔍")
-        print("🎯 LEVEL 4: SQL QUERY EXECUTION 🎯")
+        print("🎯 LEVEL 4: SQL QUERY EXECUTION & LEVEL 5: RECURSIVE VALIDATION 🎯")
         print("🔍" + "-" * 50 + "🔍")
         start_time_4 = datetime.now()
         end_time_4 = None
+        attempts_log = []
         
         if table_result.get('query'):
             table_result['query'] = ensure_square_bracketed_tables(table_result['query'])
@@ -765,62 +906,21 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
         if table_result['query'] and table_result['query'] != "No query found" and is_sql:
             try:
                 print("🚀" + "=" * 48 + "🚀")
-                print("⚡ EXECUTING GENERATED SQL QUERY ⚡")
+                print("⚡ EXECUTING GENERATED SQL QUERY (WITH SELF-CORRECTION AGENT) ⚡")
                 print("🚀" + "=" * 48 + "🚀")
-                print(f"📋 Query to execute: {table_result['query']}")
+                print(f"📋 Initial Query to execute: {table_result['query']}")
                 print("🔧" + "-" * 48 + "🔧")
 
+                schemas_ctx = table_result.get('schemas_context', '')
+                db_results, final_sql, attempts_log = self.execute_sql_with_self_correction(
+                    initial_sql=table_result['query'],
+                    user_query=search_query,
+                    schemas_context=schemas_ctx,
+                    max_retries=2
+                )
                 
-                # Execute SQL query
-                print("🔄 Executing SQL query against database...")
-                # Check if it's a stored procedure call
-                if table_result['query'].strip().upper().startswith('EXEC') or table_result['query'].strip().upper().startswith('EXECUTE'):
-                    # For stored procedures, try multiple approaches
-                    print("🔍 Detected stored procedure call, trying multiple execution methods...")
-                    db_results = None
-                    
-                    # Method 1: Try pd.read_sql
-                    try:
-                        print("🔧 Method 1: Trying pd.read_sql method...")
-                        db_results = pd.read_sql(table_result['query'], self.engine)
-                        print("✅ pd.read_sql method succeeded!")
-                    except Exception as e1:
-                        print(f"❌ pd.read_sql failed: {e1}")
-                        
-                        # Method 2: Try with raw connection
-                        try:
-                            print("🔧 Method 2: Trying raw connection method...")
-                            raw_conn = self.engine.raw_connection()
-                            db_results = pd.read_sql(table_result['query'], raw_conn)
-                            raw_conn.close()
-                            print("✅ Raw connection method succeeded!")
-                        except Exception as e2:
-                            print(f"❌ Raw connection failed: {e2}")
-                            
-                            # Method 3: Try with text() wrapper
-                            try:
-                                print("🔧 Method 3: Trying text() wrapper method...")
-                                db_results = pd.read_sql(text(table_result['query']), self.engine)
-                                print("✅ Text wrapper method succeeded!")
-                            except Exception as e3:
-                                print(f"❌ Text wrapper failed: {e3}")
-                                raise e3
-                    
-                    if db_results is None:
-                        raise Exception("All stored procedure execution methods failed")
-                else:
-                    # For regular SELECT queries, use read_sql_query
-                    print("🔧 Using robust read_sql_query for Hierarchical Search...")
-                    try:
-                        db_results = pd.read_sql_query(text(table_result['query']), self.engine)
-                    except Exception as e_reg:
-                        print(f"🔧 Regular query failed, trying raw connection fallback: {e_reg}")
-                        raw_conn = self.engine.raw_connection()
-                        try:
-                            # Use raw connection directly for maximum compatibility
-                            db_results = pd.read_sql(table_result['query'], raw_conn)
-                        finally:
-                            raw_conn.close()
+                # Update query in table_result to store corrected SQL in chat history & response
+                table_result['query'] = final_sql
                 
                 cols = list(db_results.columns)
                 cols_preview = f"{cols[:5]} (+{len(cols)-5} more)" if len(cols) > 5 else str(cols)
@@ -844,15 +944,14 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
                 ai_preview = (ai_response[:90] + "...") if len(ai_response) > 90 else ai_response
                 print(f"✅ EXECUTION COMPLETE ({execution_time:.2f}s) | AI Response: {ai_preview}\n")
 
-                    
             except Exception as e:
                 print("💥" + "=" * 48 + "💥")
-                print("❌ SQL QUERY EXECUTION FAILED ❌")
+                print("❌ SQL QUERY EXECUTION FAILED AFTER RETRIES ❌")
                 print("💥" + "=" * 48 + "💥")
                 print(f"🚨 Error type: {type(e).__name__}")
                 print(f"🚨 Error message: {str(e)}")
                 print(f"🔍 Query that failed: {table_result['query']}")
-                logger.error(f"Error executing SQL query: {e}")
+                logger.error(f"Error executing SQL query after retries: {e}")
                 output = f"Error executing query: {str(e)}"
                 table = ""
                 end_time_4 = datetime.now()  # Set end_time_4 even in error case
@@ -934,7 +1033,15 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
                     'status': 'success' if 'db_results' in locals() and db_results is not None else 'failed',
                     'row_count': len(db_results) if 'db_results' in locals() and db_results is not None else 0,
                     'time_taken': (end_time_4 - start_time_4).total_seconds() if end_time_4 else 0,
-                    'query': table_result.get('query', '')
+                    'query': table_result.get('query', ''),
+                    'validation_attempts': attempts_log
+                },
+                'level_5_sql_validation': {
+                    'status': 'passed' if 'db_results' in locals() and db_results is not None else 'failed',
+                    'total_attempts': len(attempts_log) if attempts_log else (1 if 'db_results' in locals() and db_results is not None else 0),
+                    'self_corrected': len(attempts_log) > 1,
+                    'validation_history': attempts_log,
+                    'final_validated_sql': table_result.get('query', '')
                 },
                 'detailed_logs': logs_list
             },
@@ -1487,6 +1594,19 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
 
                     all_table_names = list(set(table_schemas_map.keys()) | set(table_doc_map.keys()))
 
+                    # Approach 1: Filter out backup, temp, archive, date-suffixed & clone tables so they are NEVER indexed into ChromaDB
+                    import re
+                    def is_backup_or_temp_table(tname):
+                        tbl_lower = tname.strip().lower()
+                        keywords = ["_bkp", "bkp_", "_backup", "backup_", "temp", "tmp_", "_old", "_archive", "_training_data", "bak_", "_copy", "copy_"]
+                        if any(k in tbl_lower for k in keywords):
+                            return True
+                        if re.search(r'(_\d{1,2}(jan|feb|mar|apr|may|jun|june|jul|july|aug|sep|sept|oct|nov|dec)|_\d{4}|\(final format\)|\(backup\))', tbl_lower):
+                            return True
+                        return False
+
+                    all_table_names = [t for t in all_table_names if not is_backup_or_temp_table(t)]
+
                     t_ids, t_docs, t_metas = [], [], []
                     for t_name in all_table_names:
                         info = table_schemas_map.get(t_name, {"category": "", "subcategory": "", "prompt_snippets": []})
@@ -1621,9 +1741,17 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
                         t_metas.append(meta_entry)
 
                     if t_ids:
+                        try:
+                            existing_ids = schema_coll.get()['ids']
+                            stale_ids = [eid for eid in existing_ids if eid not in t_ids]
+                            if stale_ids:
+                                schema_coll.delete(ids=stale_ids)
+                                print(f"🗑️ [ChromaDB Auto-Syncer] Purged {len(stale_ids)} stale backup/temp table embeddings from vector store disk.")
+                        except Exception as e_purge:
+                            print(f"⚠️ [ChromaDB Auto-Syncer Purge Notice]: {e_purge}")
                         schema_coll.upsert(ids=t_ids, documents=t_docs, metadatas=t_metas)
                         HierarchicalSearchConsumer._schema_collection = schema_coll
-                        print(f"🎉 [ChromaDB Auto-Syncer] Synced {len(t_ids)} dynamic enriched table schemas into ChromaDB!")
+                        print(f"🎉 [ChromaDB Auto-Syncer] Synced {len(t_ids)} dynamic enriched active production table schemas into ChromaDB!")
             except Exception as e_sql:
                 print(f"⚠️ [ChromaDB Auto-Syncer SQL Error]: {e_sql}")
 
@@ -2016,7 +2144,7 @@ Return ONLY a JSON array of selected column names, e.g. ["col_a", "col_b"]. Do n
             print(f"💥 Error in prune_table_schema for {table_name}: {err}")
             return raw_schema_text
 
-    def retrieve_top_k_schemas_chroma(self, query, k=5, prompt_k=2, table_names=None):
+    def retrieve_top_k_schemas_chroma(self, query, k=10, prompt_k=2, table_names=None):
         """
         Hybrid Global + Subcategory RAG Table Schema Retrieval with Dynamic Column Pruning:
         Combines global semantic vector search across all database tables
@@ -2077,9 +2205,23 @@ Return ONLY a JSON array of selected column names, e.g. ["col_a", "col_b"]. Do n
                     sim = round(max(0.0, 1.0 - (dist * 0.70)), 4)
                     combined_entries.append((tbl, doc, meta, sim, p_score))
 
+            # Approach 3: Pre-filter out any backup/temp/dated tables BEFORE selecting Top 5 semantic tables
+            import re
+            def is_backup_or_temp_table(tname):
+                tbl_lower = tname.strip().lower()
+                keywords = ["_bkp", "bkp_", "_backup", "backup_", "temp", "tmp_", "_old", "_archive", "_training_data", "bak_", "_copy", "copy_"]
+                if any(k in tbl_lower for k in keywords):
+                    return True
+                if re.search(r'(_\d{1,2}(jan|feb|mar|apr|may|jun|june|jul|july|aug|sep|sept|oct|nov|dec)|_\d{4}|\(final format\)|\(backup\))', tbl_lower):
+                    return True
+                return False
+
+            clean_entries = [entry for entry in combined_entries if not is_backup_or_temp_table(entry[0])]
+            candidate_pool = clean_entries if clean_entries else combined_entries
+
             # Sort candidate entries strictly by 100% Vector Similarity descending for RAG retrieval
-            combined_entries.sort(key=lambda x: x[3], reverse=True)
-            top_k_semantic_entries = combined_entries[:k]
+            candidate_pool.sort(key=lambda x: x[3], reverse=True)
+            top_k_semantic_entries = candidate_pool[:k]
             retrieved_tables = [entry[0] for entry in top_k_semantic_entries]
             table_list_formatted = [f"dbo.[{t}] (Similarity: {entry[3]:.2f}, Priority: {entry[4]:.2f})" for t, entry in zip(retrieved_tables, top_k_semantic_entries)]
             print(f"🎯 [RAG TOP 5 SEMANTIC TABLES RETRIEVED FROM CHROMADB] ({len(retrieved_tables)} tables): {table_list_formatted}")
@@ -3059,15 +3201,13 @@ EXPANDED QUERY:"""
             if "Current question:" in clean_query:
                 clean_query = clean_query.split("Current question:")[-1].strip()
 
-            rag_schemas, retrieved_tables = self.retrieve_top_k_schemas_chroma(clean_query, k=5, prompt_k=2, table_names=available_tables)
+            rag_schemas, retrieved_tables = self.retrieve_top_k_schemas_chroma(clean_query, k=10, prompt_k=2, table_names=available_tables)
             end_time_0 = datetime.now()
             rag_time_taken = round((end_time_0 - start_time_0).total_seconds(), 3)
             
             tables_fetched_formatted = [f"dbo.[{t}]" for t in retrieved_tables] if retrieved_tables else [f"dbo.[{t}]" for t in available_tables[:5]]
             prompt_tables_formatted = tables_fetched_formatted[:2]
-            print(f"🎯 [RAG TABLES RETRIEVED FROM CHROMADB] ({len(tables_fetched_formatted)} tables): {tables_fetched_formatted}")
-            print(f"⚡ [TOP 2 PRIORITY TABLE SCHEMAS PASSED TO LLM PROMPT]: {prompt_tables_formatted}")
-            print(f"⏱️  Time taken: {rag_time_taken:.3f} seconds")
+            print(f"⏱️  RAG retrieval time: {rag_time_taken:.3f} seconds")
             print("")
             
             if rag_schemas:
@@ -3167,6 +3307,7 @@ Respond strictly with ONLY the executable T-SQL query block.
                 'reasoning': reasoning,
                 'prompt_used': f"{category}_{subcategory}",
                 'final_generated_prompt': complete_prompt,
+                'schemas_context': rag_schemas,
                 'level_0_rag_tables': {
                     'tables_fetched': tables_fetched_formatted,
                     'raw_table_names': retrieved_tables if retrieved_tables else available_tables[:5],

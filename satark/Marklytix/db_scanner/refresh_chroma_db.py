@@ -178,6 +178,19 @@ def refresh_chroma_db():
 
         all_table_names = list(set(table_schemas_map.keys()) | set(table_doc_map.keys()))
 
+        # Filter out backup, temp, archive, date-suffixed & clone tables so they are NEVER indexed into ChromaDB
+        import re
+        def is_backup_or_temp_table(tname):
+            tbl_lower = tname.strip().lower()
+            keywords = ["_bkp", "bkp_", "_backup", "backup_", "temp", "tmp_", "_old", "_archive", "_training_data", "bak_", "_copy", "copy_"]
+            if any(k in tbl_lower for k in keywords):
+                return True
+            if re.search(r'(_\d{1,2}(jan|feb|mar|apr|may|jun|june|jul|july|aug|sep|sept|oct|nov|dec)|_\d{4}|\(final format\)|\(backup\))', tbl_lower):
+                return True
+            return False
+
+        all_table_names = [t for t in all_table_names if not is_backup_or_temp_table(t)]
+
         # C. Read Table Columns & Build Enriched Table Schema Vectors
         t_ids, t_docs, t_metas = [], [], []
         for t_name in all_table_names:

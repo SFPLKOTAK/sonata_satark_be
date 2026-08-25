@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Marklytix - New DB Onboarding & Complete Architecture Guide</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- Mermaid.js for Diagrams -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+        :root {
+            --bg-dark: #09090b;
+            --bg-card: #121215;
+            --bg-card-hover: #18181c;
+            --border-color: #27272a;
+            --border-glow: #3f3f46;
+            
+            --accent-cyan: #06b6d4;
+            --accent-sky: #38bdf8;
+            --accent-emerald: #10b981;
+            --accent-purple: #a855f7;
+            --accent-amber: #f59e0b;
+            --accent-rose: #f43f5e;
+            --accent-indigo: #6366f1;
+
+            --text-main: #f4f4f5;
+            --text-muted: #a1a1aa;
+            --text-dim: #71717a;
+            
+            --font-heading: 'Outfit', sans-serif;
+            --font-body: 'Inter', sans-serif;
+            --font-code: 'Fira Code', monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            font-family: var(--font-body);
+            line-height: 1.6;
+            padding: 0;
+            margin: 0;
+            overflow-x: hidden;
+        }
+
+        /* Header Styling */
+        header {
+            background: linear-gradient(180deg, rgba(18, 18, 21, 0.95) 0%, rgba(9, 9, 11, 0.9) 100%);
+            backdrop-filter: blur(16px);
+            border-bottom: 1px solid var(--border-color);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            padding: 1.25rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .brand-logo {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: var(--font-heading);
+            font-weight: 800;
+            font-size: 1.25rem;
+            color: #ffffff;
+            box-shadow: 0 0 20px rgba(6, 182, 212, 0.4);
+        }
+
+        .brand-title {
+            font-family: var(--font-heading);
+            font-size: 1.35rem;
+            font-weight: 700;
+            background: linear-gradient(90deg, #ffffff 0%, #a1a1aa 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .brand-tag {
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            padding: 0.2rem 0.6rem;
+            border-radius: 20px;
+            background: rgba(16, 185, 129, 0.1);
+            color: var(--accent-emerald);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 1.5rem;
+            list-style: none;
+        }
+
+        .nav-links a {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 0.85rem;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+
+        .nav-links a:hover {
+            color: var(--accent-cyan);
+        }
+
+        /* Layout Container */
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2.5rem 2rem;
+        }
+
+        /* Hero Banner */
+        .hero {
+            position: relative;
+            padding: 3rem 2.5rem;
+            border-radius: 24px;
+            background: radial-gradient(circle at top right, rgba(16, 185, 129, 0.15), transparent 50%),
+                        radial-gradient(circle at bottom left, rgba(6, 182, 212, 0.15), transparent 50%),
+                        var(--bg-card);
+            border: 1px solid var(--border-color);
+            margin-bottom: 3rem;
+            overflow: hidden;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+        }
+
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0; height: 1px;
+            background: linear-gradient(90deg, transparent, var(--accent-emerald), var(--accent-cyan), transparent);
+        }
+
+        .hero-title {
+            font-family: var(--font-heading);
+            font-size: 2.5rem;
+            font-weight: 800;
+            margin-bottom: 1rem;
+            line-height: 1.2;
+        }
+
+        .hero-title span {
+            background: linear-gradient(90deg, var(--accent-emerald), var(--accent-cyan));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .hero-subtitle {
+            font-size: 1.05rem;
+            color: var(--text-muted);
+            max-width: 950px;
+            margin-bottom: 2rem;
+        }
+
+        .badges-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+        }
+
+        .badge-card {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--border-color);
+            font-size: 0.8rem;
+            font-weight: 500;
+        }
+
+        .badge-icon {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+
+        /* Section Header */
+        .section-header {
+            margin-bottom: 1.75rem;
+        }
+
+        .section-tag {
+            font-family: var(--font-code);
+            font-size: 0.75rem;
+            color: var(--accent-emerald);
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            margin-bottom: 0.25rem;
+        }
+
+        .section-title {
+            font-family: var(--font-heading);
+            font-size: 1.75rem;
+            font-weight: 700;
+        }
+
+        /* Blueprint Step Cards */
+        .step-cards-container {
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+            margin-bottom: 3rem;
+        }
+
+        .step-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            padding: 2rem;
+            position: relative;
+            transition: all 0.3s ease;
+        }
+
+        .step-card:hover {
+            border-color: var(--border-glow);
+            transform: translateY(-2px);
+        }
+
+        .step-number-badge {
+            position: absolute;
+            top: -12px;
+            left: 24px;
+            padding: 0.25rem 0.8rem;
+            border-radius: 20px;
+            font-family: var(--font-code);
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .step-1 .step-number-badge { background: var(--accent-cyan); color: #000; }
+        .step-2 .step-number-badge { background: var(--accent-purple); color: #fff; }
+        .step-3 .step-number-badge { background: var(--accent-amber); color: #000; }
+        .step-4 .step-number-badge { background: var(--accent-emerald); color: #000; }
+        .step-5 .step-number-badge { background: var(--accent-rose); color: #fff; }
+
+        .step-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+            margin-top: 0.5rem;
+        }
+
+        .step-title {
+            font-family: var(--font-heading);
+            font-size: 1.4rem;
+            font-weight: 700;
+        }
+
+        .step-script {
+            font-family: var(--font-code);
+            font-size: 0.85rem;
+            color: var(--accent-cyan);
+            background: rgba(6, 182, 212, 0.1);
+            padding: 0.3rem 0.75rem;
+            border-radius: 8px;
+            border: 1px solid rgba(6, 182, 212, 0.2);
+        }
+
+        .step-description {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            margin-bottom: 1.25rem;
+            line-height: 1.6;
+        }
+
+        /* Diagram Box */
+        .diagram-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            padding: 2rem;
+            margin-bottom: 3rem;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            overflow-x: auto;
+        }
+
+        .diagram-card .mermaid {
+            display: flex;
+            justify-content: center;
+        }
+
+        /* Code Block Styling */
+        pre {
+            background: #060608;
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1.25rem;
+            font-family: var(--font-code);
+            font-size: 0.82rem;
+            color: #e4e4e7;
+            overflow-x: auto;
+            margin-bottom: 1.5rem;
+            line-height: 1.5;
+        }
+
+        code .keyword { color: var(--accent-purple); font-weight: bold; }
+        code .function { color: var(--accent-sky); }
+        code .string { color: var(--accent-emerald); }
+        code .comment { color: var(--text-dim); font-style: italic; }
+
+        /* Tables Created Grid */
+        .db-tables-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.25rem;
+            margin-bottom: 3rem;
+        }
+
+        .db-table-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 14px;
+            padding: 1.25rem;
+        }
+
+        .db-table-name {
+            font-family: var(--font-code);
+            font-size: 0.9rem;
+            font-weight: 700;
+            color: var(--accent-cyan);
+            margin-bottom: 0.5rem;
+        }
+
+        .db-table-purpose {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        /* Footer */
+        footer {
+            border-top: 1px solid var(--border-color);
+            padding: 2rem;
+            text-align: center;
+            color: var(--text-dim);
+            font-size: 0.8rem;
+            background: var(--bg-card);
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Header Navigation -->
+    <header>
+        <div class="brand">
+            <div class="brand-logo">M</div>
+            <div>
+                <div class="brand-title">Marklytix</div>
+                <div style="font-size: 0.7rem; color: var(--text-muted);">Database Onboarding Blueprint</div>
+            </div>
+            <span class="brand-tag">Auto-Scanner Engine</span>
+        </div>
+        <ul class="nav-links">
+            <li><a href="#blueprint">Onboarding Blueprint</a></li>
+            <li><a href="#diagram">System Architecture</a></li>
+            <li><a href="#modules">5 Core Modules</a></li>
+            <li><a href="#tables">Generated DB Tables</a></li>
+        </ul>
+    </header>
+
+    <div class="container">
+
+        <!-- Hero Section -->
+        <section class="hero">
+            <h1 class="hero-title">New Database Onboarding <span>& Complete Chatbot Setup</span></h1>
+            <p class="hero-subtitle">
+                How to connect any fresh enterprise database (SQL Server, PostgreSQL, MySQL) to Marklytix and have a fully trained, 
+                zero-hallucination AI Chatbot running in 5 automated CLI execution steps.
+            </p>
+            <div class="badges-grid">
+                <div class="badge-card"><div class="badge-icon" style="background: var(--accent-emerald);"></div> 100% Automated Graph Extraction</div>
+                <div class="badge-card"><div class="badge-icon" style="background: var(--accent-cyan);"></div> Louvain Community Graph Clustering</div>
+                <div class="badge-card"><div class="badge-icon" style="background: var(--accent-purple);"></div> LLM Schema Data Dictionary Enrichment</div>
+                <div class="badge-card"><div class="badge-icon" style="background: var(--accent-amber);"></div> Automated Priority & Vitality Scoring</div>
+                <div class="badge-card"><div class="badge-icon" style="background: var(--accent-rose);"></div> Multi-Agent WebSocket Runtime</div>
+            </div>
+        </section>
+
+        <!-- Onboarding Blueprint Steps -->
+        <section id="blueprint">
+            <div class="section-header">
+                <div class="section-tag">ZERO-TO-HERO BLUEPRINT</div>
+                <h2 class="section-title">5-Step Automated Setup for Any New Database</h2>
+            </div>
+
+            <div class="step-cards-container">
+
+                <!-- Step 1 -->
+                <div class="step-card step-1">
+                    <span class="step-number-badge">Step 1: Graph Scanning & Louvain Clustering</span>
+                    <div class="step-header">
+                        <h3 class="step-title">Database Graph Extraction & Domain Clustering</h3>
+                        <span class="step-script">graph_taxonomy_scanner.py</span>
+                    </div>
+                    <p class="step-description">
+                        Connects to the fresh database and extracts schema graphs (Foreign Keys, shared Primary Keys, and TF-IDF column similarity). 
+                        Executes <strong>Louvain Community Detection</strong> to discover table communities, and invokes LLM to automatically name Categories 
+                        (e.g., <code>Domain 1: User Interaction...</code>) and Subcategories.
+                    </p>
+                    <pre><code>python -m db_scanner.graph_taxonomy_scanner</code></pre>
+                </div>
+
+                <!-- Step 2 -->
+                <div class="step-card step-2">
+                    <span class="step-number-badge">Step 2: LLM Schema Enrichment</span>
+                    <div class="step-header">
+                        <h3 class="step-title">Automated Schema Documentation & Data Dictionary</h3>
+                        <span class="step-script">table_schema_enricher.py</span>
+                    </div>
+                    <p class="step-description">
+                        Inspects <code>INFORMATION_SCHEMA.COLUMNS</code> for every table. Connects to LLM (Gemini/OpenAI) to generate detailed business purpose descriptions, 
+                        column data dictionaries, explicit JOIN predicates, and populates <code>dbo.Marklytix_TableDocumentation</code>.
+                    </p>
+                    <pre><code>python -m db_scanner.table_schema_enricher</code></pre>
+                </div>
+
+                <!-- Step 3 -->
+                <div class="step-card step-3">
+                    <span class="step-number-badge">Step 3: Taxonomy Reconciliation</span>
+                    <div class="step-header">
+                        <h3 class="step-title">Reconciliation & Specialized Domain Prompt Creation</h3>
+                        <span class="step-script">reconciler_service.py</span>
+                    </div>
+                    <p class="step-description">
+                        Reconciles staging records into production tables (<code>Marklytix_Categories</code>, <code>Marklytix_Subcategories</code>). 
+                        Detects schema additions/modifications, constructs domain join predicates, and creates specialized domain system prompts in <code>dbo.Marklytix_SubcategoryPrompts</code>.
+                    </p>
+                    <pre><code>python -m db_scanner.reconciler_service</code></pre>
+                </div>
+
+                <!-- Step 4 -->
+                <div class="step-card step-4">
+                    <span class="step-number-badge">Step 4: Vector Indexing & Priority Scoring</span>
+                    <div class="step-header">
+                        <h3 class="step-title">ChromaDB Vector Store Sync & Vitality Scoring</h3>
+                        <span class="step-script">refresh_chroma_db.py</span>
+                    </div>
+                    <p class="step-description">
+                        Queries database statistics (<code>TotalRows</code>, <code>DataSize_MB</code> from <code>sys.partitions</code>) to compute Production Priority Scores (0.01 - 1.00). 
+                        Embeds enriched table documents, category vectors, and subcategory vectors into local persistent ChromaDB disk storage (<code>chroma_db_storage</code>).
+                    </p>
+                    <pre><code>python -m db_scanner.refresh_chroma_db</code></pre>
+                </div>
+
+                <!-- Step 5 -->
+                <div class="step-card step-5">
+                    <span class="step-number-badge">Step 5: Launch Runtime Chatbot</span>
+                    <div class="step-header">
+                        <h3 class="step-title">Launch Django Channels WebSocket Engine</h3>
+                        <span class="step-script">consumers.py</span>
+                    </div>
+                    <p class="step-description">
+                        Launch the server. The multi-agent <code>HierarchicalSearchConsumer</code> is live and ready! Auditors and web users can now ask natural-language questions 
+                        and receive real-time T-SQL queries, HTML data tables, and executive briefs.
+                    </p>
+                    <pre><code>python manage.py runserver 0.0.0.0:8000</code></pre>
+                </div>
+
+            </div>
+        </section>
+
+        <!-- System Architecture Mermaid Diagram -->
+        <section id="diagram">
+            <div class="section-header">
+                <div class="section-tag">FULL ARCHITECTURE DIAGRAM</div>
+                <h2 class="section-title">Database Onboarding to Runtime Execution Flow</h2>
+            </div>
+
+            <div class="diagram-card">
+                <div class="mermaid">
+graph TD
+    %% Database Connection
+    NewDB[(Fresh Client SQL Server Database)] -->|1. Scan Schemas & Foreign Keys| Scanner[graph_taxonomy_scanner.py]
+    
+    %% Setup Phase Subsystem
+    subgraph SetupPhase["Automated Database Onboarding Pipeline (CLI Setup)"]
+        Scanner -->|Louvain Graph Clustering| LLM_Namer[LLM Domain Namer: Gemma 4 / Llama]
+        LLM_Namer -->|Populates| StagingDB[(dbo.Marklytix_Staging_Categories & Subcategories)]
+        
+        NewDB -->|2. Inspect Columns| Enricher[table_schema_enricher.py]
+        Enricher -->|Generate Data Dictionary & Purposes| LLM_Enricher[LLM Table Documentation Generator]
+        LLM_Enricher -->|Populates| DocDB[(dbo.Marklytix_TableDocumentation)]
+        
+        StagingDB -->|3. Reconcile & Build Prompts| Reconciler[reconciler_service.py]
+        DocDB --> Reconciler
+        Reconciler -->|Populates| ProdPrompts[(dbo.Marklytix_SubcategoryPrompts)]
+        
+        NewDB -->|4. Query sys.partitions TotalRows & DataSize_MB| Refresher[refresh_chroma_db.py]
+        DocDB --> Refresher
+        Refresher -->|Calculate PriorityScore 0.01 - 1.00| ChromaDB[(Persistent ChromaDB Vector Store)]
+    end
+
+    %% Runtime Phase Subsystem
+    subgraph RuntimePhase["Runtime Multi-Agent WebSocket Engine (consumers.py)"]
+        Auditor([Auditor App / Web User]) -->|5. WS Handshake with branch_id| Consumer[HierarchicalSearchConsumer]
+        Consumer -->|Turn Context Stripping| RAGRanker[Priority RAG Ranker: Rank = 0.70*Sim + 0.30*PriorityScore]
+        ChromaDB --> RAGRanker
+        
+        RAGRanker -->|Top K Schemas + Priority Badges| PromptGen[Compact Schema Builder]
+        ProdPrompts --> PromptGen
+        
+        PromptGen -->|T-SQL System Instructions| LLMQueryGen[LLM Query Generator: Gemini 2.0]
+        LLMQueryGen -->|Generated T-SQL Query| SQLExec[(SQL Server Database: Read-Only ODBC)]
+        
+        SQLExec -->|Result Data| Synthesis[HTML Table & Executive Briefing Generator]
+        PromptGen -->|Live Progress Stream| WSStream[WebSocket Progress Channel]
+    end
+
+    Synthesis --> Auditor
+    WSStream --> Auditor
+                </div>
+            </div>
+        </section>
+
+        <!-- Generated Database Tables Grid -->
+        <section id="tables">
+            <div class="section-header">
+                <div class="section-tag">SCHEMA METADATA</div>
+                <h2 class="section-title">Automated System Tables Created in SQL Database</h2>
+            </div>
+
+            <div class="db-tables-grid">
+                <div class="db-table-card">
+                    <div class="db-table-name">dbo.Marklytix_TableDocumentation</div>
+                    <div class="db-table-purpose">Stores AI-generated business purposes, data dictionaries (ColumnMeanings), explicit join relationships (ConnectedTables), and Louvain cluster IDs.</div>
+                </div>
+
+                <div class="db-table-card">
+                    <div class="db-table-name">dbo.Marklytix_SubcategoryPrompts</div>
+                    <div class="db-table-purpose">Contains specialized domain system prompts, domain T-SQL rules, and associated table lists for each subcategory.</div>
+                </div>
+
+                <div class="db-table-card">
+                    <div class="db-table-name">dbo.Marklytix_Categories</div>
+                    <div class="db-table-purpose">Production category taxonomy mapping high-level operational domains (e.g. Credit Risk, Vault Control, Audit History).</div>
+                </div>
+
+                <div class="db-table-card">
+                    <div class="db-table-name">dbo.Marklytix_Subcategories</div>
+                    <div class="db-table-purpose">Production subcategory taxonomy mapping targeted sub-domains with deduplicated search keywords.</div>
+                </div>
+
+                <div class="db-table-card">
+                    <div class="db-table-name">dbo.Marklytix_Staging_Categories</div>
+                    <div class="db-table-purpose">Staging area for Graph Taxonomy Scanner to insert newly discovered candidate categories before reconciliation.</div>
+                </div>
+
+                <div class="db-table-card">
+                    <div class="db-table-name">dbo.Marklytix_Staging_Subcategories</div>
+                    <div class="db-table-purpose">Staging area for newly discovered candidate subcategories prior to reconciliation.</div>
+                </div>
+            </div>
+        </section>
+
+    </div>
+
+    <footer>
+        Marklytix Enterprise Architecture Documentation &bull; AI Core Engine &bull; Created 2026
+    </footer>
+
+    <script>
+        // Initialize Mermaid Diagrams
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'dark',
+            themeVariables: {
+                darkMode: true,
+                background: '#121215',
+                primaryColor: '#10b981',
+                secondaryColor: '#06b6d4',
+                tertiaryColor: '#a855f7',
+                lineColor: '#3f3f46',
+                fontFamily: 'Inter, sans-serif'
+            }
+        });
+    </script>
+</body>
+</html>
