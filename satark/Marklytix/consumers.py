@@ -10,6 +10,8 @@ import hashlib
 import logging
 import threading
 import pandas as pd
+import math
+from collections import Counter
 from datetime import datetime, timedelta
 from urllib.parse import quote_plus
 from dotenv import load_dotenv
@@ -1713,15 +1715,316 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
 
 
 
+    _table_docs_cache = None
+    _db_columns_cache = None
+
+    @classmethod
+    def get_table_documentation_cache(cls, engine):
+        """Loads and caches table purpose, column meanings, and join keys from dbo.Marklytix_TableDocumentation."""
+        if cls._table_docs_cache is not None:
+            return cls._table_docs_cache
+        
+        docs = {}
+        try:
+            with engine.connect() as conn:
+                res = conn.execute(text("""
+                    SELECT TableName, TablePurpose, ConnectedTables, ColumnMeanings
+                    FROM dbo.Marklytix_TableDocumentation
+                """)).fetchall()
+                for r in res:
+                    tbl_name = (r[0] or "").strip().lower()
+                    if not tbl_name:
+                        continue
+                    purpose = r[1] or ""
+                    try:
+                        connected = json.loads(r[2]) if r[2] else []
+                    except Exception:
+                        connected = []
+                    try:
+                        meanings = json.loads(r[3]) if r[3] else {}
+                    except Exception:
+                        meanings = {}
+                    
+                    # Dynamically calculate connection frequency across all relationships in ConnectedTables
+                    col_freq = Counter()
+                    for item in connected:
+                        if isinstance(item, dict):
+                            target_t = (item.get("table_name") or "").lower()
+                            # Down-weight clone backup tables to prioritize true functional relational hubs
+                            is_clone = any(bk in target_t for bk in ["_bkp", "_backup", "temp", "_old"])
+                            weight = 0.5 if is_clone else 1.0
+                            
+                            rel_type = item.get("relationship_type", "")
+                            matches = re.findall(r'(?:Shared_Columns|PK_FK_Heuristic)\(([^)]+)\)', rel_type)
+                            for match in matches:
+                                for col in match.split(','):
+                                    c = col.strip().lower()
+                                    if c and c not in ('createddate', 'updateddate', 'createdby', 'updatedby', 'isactive', 'comment', 'remarks'):
+                                        col_freq[c] += weight
+                            
+                            pred = item.get("join_predicate", "")
+                            pred_cols = re.findall(r'\[([^\]]+)\]', pred)
+                            for col in pred_cols:
+                                c = col.strip().lower()
+                                if c and c not in ('common_col', 'createddate', 'updateddate', 'createdby', 'updatedby', 'isactive', 'comment', 'remarks'):
+                                    col_freq[c] += weight
+
+                    # Select the Top ~5% to 8% most frequently referenced join columns across all connections
+                    join_keys = set()
+                    if col_freq:
+                        total_distinct = len(col_freq)
+                        top_count = max(2, min(5, int(math.ceil(total_distinct * 0.08))))
+                        most_common_cols = [c for c, _ in col_freq.most_common(top_count)]
+                        join_keys.update(most_common_cols)
+
+                    docs[tbl_name] = {
+                        "purpose": purpose,
+                        "connected": connected,
+                        "join_keys": join_keys,
+                        "meanings": meanings
+                    }
+            cls._table_docs_cache = docs
+            print(f"✅ [COLUMN PRUNER] Loaded {len(docs)} table documentation metadata entries into memory.")
+        except Exception as e:
+            print(f"⚠️ [COLUMN PRUNER] Could not load dbo.Marklytix_TableDocumentation metadata: {e}")
+            cls._table_docs_cache = {}
+        
+        return cls._table_docs_cache
+
+    @classmethod
+    def get_db_columns_cache(cls, engine):
+        """Loads and caches exact column names & data types for all tables from INFORMATION_SCHEMA.COLUMNS."""
+        if cls._db_columns_cache is not None:
+            return cls._db_columns_cache
+        
+        table_cols = {}
+        try:
+            with engine.connect() as conn:
+                res = conn.execute(text("""
+                    SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH
+                    FROM INFORMATION_SCHEMA.COLUMNS
+                    ORDER BY TABLE_NAME, ORDINAL_POSITION
+                """)).fetchall()
+                for r in res:
+                    t_name = (r[0] or "").strip().lower()
+                    c_name = (r[1] or "").strip()
+                    c_type = r[2] or ""
+                    c_len = f"({r[3]})" if r[3] is not None and r[3] != -1 else ("(max)" if r[3] == -1 else "")
+                    full_type = f"{c_type}{c_len}".strip()
+                    
+                    if t_name not in table_cols:
+                        table_cols[t_name] = []
+                    table_cols[t_name].append({
+                        "name": c_name,
+                        "type": full_type
+                    })
+            cls._db_columns_cache = table_cols
+            print(f"✅ [COLUMN PRUNER] Cached full column schema for {len(table_cols)} database tables from INFORMATION_SCHEMA.")
+        except Exception as e:
+            print(f"⚠️ [COLUMN PRUNER] Could not fetch INFORMATION_SCHEMA.COLUMNS: {e}")
+            cls._db_columns_cache = {}
+        
+        return cls._db_columns_cache
+
+    def prune_table_schema(self, table_name, raw_schema_text, user_query, max_dynamic_cols=10):
+        """
+        Approach C: Hybrid Rule + LLM Column Pruning
+        1. Fetches ALL columns directly from INFORMATION_SCHEMA.COLUMNS (e.g. all 46-51 columns).
+        2. Preserves mandatory join keys (from Marklytix_TableDocumentation), Primary/Foreign keys & Date fields.
+        3. Filters remaining non-key columns down to top ~8-10 relevant fields using LLM pass.
+        4. Attaches inline column business meanings from Marklytix_TableDocumentation.
+        5. Reconstructs a clean, compact DDL block for prompt injection.
+        """
+        try:
+            engine = get_shared_db_engine()
+            table_docs = HierarchicalSearchConsumer.get_table_documentation_cache(engine)
+            db_schema_cache = HierarchicalSearchConsumer.get_db_columns_cache(engine)
+            
+            tbl_info = table_docs.get(table_name.lower(), {})
+            join_keys = tbl_info.get("join_keys", set())
+            meanings = tbl_info.get("meanings", {})
+            purpose = tbl_info.get("purpose", "")
+
+            columns = []
+            seen_cols = set()
+
+            # Strategy 1: Load full column schema directly from INFORMATION_SCHEMA.COLUMNS (all 46+ columns)
+            db_cols = db_schema_cache.get(table_name.lower(), [])
+            if db_cols:
+                for cinfo in db_cols:
+                    c_name_clean = cinfo["name"]
+                    if c_name_clean.lower() not in seen_cols:
+                        seen_cols.add(c_name_clean.lower())
+                        col_name_lower = c_name_clean.lower()
+                        
+                        # Mandatory ONLY: explicit join keys from ConnectedTables + exact table primary key "id"
+                        # All other _id/_code suffix cols, date cols etc. are LLM-prunable candidates
+                        is_join_key = col_name_lower in join_keys
+                        is_primary_key = col_name_lower == "id"
+                        is_mandatory = is_join_key or is_primary_key
+                        
+                        columns.append({
+                            "name": c_name_clean,
+                            "type": cinfo["type"],
+                            "lower": col_name_lower,
+                            "is_mandatory": is_mandatory,
+                            "meaning": meanings.get(c_name_clean, meanings.get(col_name_lower, ""))
+                        })
+
+            # Strategy 2: Fallback to ChromaDB bullet point extraction if DB cache didn't have table
+            if not columns:
+                bullet_matches = re.findall(r'-\s*([A-Za-z0-9_]+)\s*(?:\(([^)]+)\))?:\s*(.*)', raw_schema_text)
+                if bullet_matches:
+                    for c_name, c_type, c_desc in bullet_matches:
+                        c_name_clean = c_name.strip()
+                        if c_name_clean.lower() not in seen_cols:
+                            seen_cols.add(c_name_clean.lower())
+                            col_type_str = c_type.strip() if c_type else ""
+                            c_meaning = c_desc.strip() or meanings.get(c_name_clean, meanings.get(c_name_clean.lower(), ""))
+                            
+                            col_name_lower = c_name_clean.lower()
+                            # Mandatory ONLY: explicit join keys from ConnectedTables + exact primary key "id"
+                            is_join_key = col_name_lower in join_keys
+                            is_primary_key = col_name_lower == "id"
+                            is_mandatory = is_join_key or is_primary_key
+                            
+                            columns.append({
+                                "name": c_name_clean,
+                                "type": col_type_str,
+                                "lower": col_name_lower,
+                                "is_mandatory": is_mandatory,
+                                "meaning": c_meaning
+                            })
+
+            # Strategy 3: Fallback to SQL DDL line parsing if strategy 1 and 2 yielded empty
+            if not columns:
+                lines = [l.strip() for l in raw_schema_text.splitlines() if l.strip()]
+                for line in lines:
+                    if line.startswith("-") or ("=" in line) or ("Category:" in line) or ("Louvain" in line) or ("Connected Tables:" in line) or ("Columns:" in line):
+                        continue
+                    parts = line.split()
+                    if not parts:
+                        continue
+                    col_name = parts[0].strip("[],`\"")
+                    if col_name.upper() in ("CREATE", "TABLE", "CONSTRAINT", "PRIMARY", "KEY", "FOREIGN", ")", "(", "DBO") or col_name.startswith("--") or not re.match(r'^[A-Za-z0-9_]+$', col_name):
+                        continue
+                    
+                    if col_name.lower() not in seen_cols:
+                        seen_cols.add(col_name.lower())
+                        col_type = " ".join(parts[1:]) if len(parts) > 1 else ""
+                        col_name_lower = col_name.lower()
+                        
+                        # Mandatory ONLY: explicit join keys from ConnectedTables + exact primary key "id"
+                        is_join_key = col_name_lower in join_keys
+                        is_primary_key = col_name_lower == "id"
+                        is_mandatory = is_join_key or is_primary_key
+                        
+                        columns.append({
+                            "name": col_name,
+                            "type": col_type,
+                            "lower": col_name_lower,
+                            "is_mandatory": is_mandatory,
+                            "meaning": meanings.get(col_name, meanings.get(col_name_lower, ""))
+                        })
+
+            # Strategy 3: If still empty, pull directly from database ColumnMeanings cache!
+            if not columns and meanings:
+                for c_name, c_desc in meanings.items():
+                    c_name_clean = c_name.strip()
+                    if c_name_clean.lower() not in seen_cols:
+                        seen_cols.add(c_name_clean.lower())
+                        col_name_lower = c_name_clean.lower()
+                        # Mandatory ONLY: explicit join keys from ConnectedTables + exact primary key "id"
+                        is_join_key = col_name_lower in join_keys
+                        is_primary_key = col_name_lower == "id"
+                        is_mandatory = is_join_key or is_primary_key
+                        
+                        columns.append({
+                            "name": c_name_clean,
+                            "type": "",
+                            "lower": col_name_lower,
+                            "is_mandatory": is_mandatory,
+                            "meaning": str(c_desc)
+                        })
+
+            if not columns or len(columns) <= 15:
+                annotated_lines = []
+                for c in columns:
+                    type_str = f" ({c['type']})" if c['type'] else ""
+                    cmnt = f" -- {c['meaning']}" if c['meaning'] else ""
+                    annotated_lines.append(f"    {c['name']}{type_str}{cmnt}")
+                
+                header = f"-- Table: dbo.[{table_name}] ({len(columns)} columns)"
+                if purpose:
+                    header += f"\n-- Business Purpose: {purpose}"
+                return f"{header}\nCREATE TABLE dbo.[{table_name}] (\n" + ",\n".join(annotated_lines) + "\n);"
+
+            mandatory_cols = [c for c in columns if c["is_mandatory"]]
+            candidate_cols = [c for c in columns if not c["is_mandatory"]]
+
+            candidate_names = [c["name"] for c in candidate_cols]
+            
+            pruning_prompt = f"""You are a Database Schema Trimmer. Given a user query and a list of candidate database column names, select ONLY the top {max_dynamic_cols} column names that are directly relevant to answering the query.
+
+User Query: "{user_query}"
+Available Candidate Columns: {json.dumps(candidate_names[:80])}
+
+Return ONLY a JSON array of selected column names, e.g. ["col_a", "col_b"]. Do not return any extra explanation."""
+
+            try:
+                raw_resp = self.query_model.generate_content([pruning_prompt]).text
+                clean_json = re.sub(r"```json\s*|```\s*", "", raw_resp).strip()
+                selected_names = set(json.loads(clean_json))
+            except Exception as pe:
+                q_lower = user_query.lower()
+                selected_names = set()
+                for c in candidate_cols:
+                    if c["lower"] in q_lower or any(word in c["lower"] for word in q_lower.split() if len(word) > 3):
+                        selected_names.add(c["name"])
+                if not selected_names:
+                    selected_names = set(candidate_names[:max_dynamic_cols])
+
+            final_columns = []
+            seen = set()
+
+            for c in mandatory_cols:
+                if c["name"] not in seen:
+                    seen.add(c["name"])
+                    final_columns.append(c)
+
+            for c in candidate_cols:
+                if c["name"] in selected_names and c["name"] not in seen:
+                    seen.add(c["name"])
+                    final_columns.append(c)
+
+            annotated_lines = []
+            for c in final_columns:
+                cmnt_parts = []
+                if c["is_mandatory"]:
+                    cmnt_parts.append("[KEY/JOIN]")
+                if c["meaning"]:
+                    cmnt_parts.append(c["meaning"])
+                cmnt_str = f" -- {' | '.join(cmnt_parts)}" if cmnt_parts else ""
+                annotated_lines.append(f"    {c['name']} {c['type']}{cmnt_str}")
+
+            header = f"-- Trimmed Table: dbo.[{table_name}] ({len(final_columns)} / {len(columns)} columns preserved)"
+            if purpose:
+                header += f"\n-- Business Purpose: {purpose}"
+            return f"{header}\nCREATE TABLE dbo.[{table_name}] (\n" + ",\n".join(annotated_lines) + "\n);"
+
+        except Exception as err:
+            print(f"💥 Error in prune_table_schema for {table_name}: {err}")
+            return raw_schema_text
+
     def retrieve_top_k_schemas_chroma(self, query, k=5, prompt_k=2, table_names=None):
         """
-        Hybrid Global + Subcategory RAG Table Schema Retrieval:
+        Hybrid Global + Subcategory RAG Table Schema Retrieval with Dynamic Column Pruning:
         Combines global semantic vector search across all database tables
         with subcategory-scoped table lookups to ensure the correct tables
         are NEVER missed due to high-level misclassification.
         
         Retrieves top k (5) tables from vector store, but passes only top prompt_k (2)
-        highest priority table schemas to the final LLM prompt to prevent prompt bloating.
+        highest priority table schemas to the final LLM prompt with Approach C Column Pruning.
         """
         if not HAS_CHROMADB:
             return "", []
@@ -1793,7 +2096,11 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
                     if qw in tbl_lower or qw in doc_lower:
                         kw_boost += 0.15
                 
-                final_prompt_score = round((0.75 * sim) + (0.15 * p_score) + min(kw_boost, 0.30), 4)
+                # Severe deprioritization penalty for backup, archive, or temporary tables
+                is_backup = any(bk in tbl_lower for bk in ["_bkp", "_backup", "_temp", "temp_", "_old", "_archive", "_training_data_9aug"])
+                backup_penalty = -0.50 if is_backup else 0.0
+                
+                final_prompt_score = round((0.75 * sim) + (0.15 * p_score) + min(kw_boost, 0.30) + backup_penalty, 4)
                 ranked_prompt_candidates.append((tbl, doc, meta, final_prompt_score))
 
             # Sort top 5 semantic candidates by final prompt score descending
@@ -1805,7 +2112,9 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
             schemas = []
             for tbl, doc, meta, score in prompt_entries:
                 clean_doc = doc.split("Prompt Schema Context:")[0].strip() if "Prompt Schema Context:" in doc else doc.strip()
-                schemas.append(f"--- Table Schema: dbo.[{tbl}] ---\n{clean_doc}")
+                # Run Approach C Column Pruner with Marklytix_TableDocumentation metadata
+                pruned_doc = self.prune_table_schema(tbl, clean_doc, query)
+                schemas.append(pruned_doc)
 
             return "\n\n".join(schemas), retrieved_tables
         except Exception as e:
@@ -2966,7 +3275,7 @@ class ChatHistoryConsumer(AsyncWebsocketConsumer):
             data = json.loads(text_data)
             action = data.get("action")
 
-            if action == "get_chat_list":
+            if action in ("get_chat_list", "list_conversations"):
                 await self.send_chat_list()
             elif action == "get_chat":
                 chat_id = data.get("chat_id")
