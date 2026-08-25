@@ -2343,6 +2343,8 @@ RULES:
 2. Explicitly specify intent, metrics, and date/time parameters if implied.
 3. Keep the expanded query concise, professional, and natural (15-25 words max).
 4. Do NOT generate SQL code or markdown blocks. Output ONLY the expanded natural language query text.
+5. DO NOT CHANGE THE MEANING OF THE ASKED QUESTION.
+6. STRICTLY PRESERVE CORE NOUNS: Do NOT introduce unmentioned topic nouns or metrics. For example, if the user asks for 'feedback', do NOT insert 'performance' or 'metrics' — keep 'feedback' intact to hit tables like audit_branch_checklist_feedback.
 
 SHORTHAND QUERY: "{raw_query}"
 
