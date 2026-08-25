@@ -2263,9 +2263,79 @@ Return ONLY a JSON array of selected column names, e.g. ["col_a", "col_b"]. Do n
             print(f"[ChromaDB RAG] Error retrieving schemas for query: {e}")
             return "", []
 
+    def retrieve_top_k_sql_examples(self, query, subcategory=None, k=2):
+        """
+        Gap 5: Retrieves top verified few-shot SQL examples from ChromaDB marklytix_sql_examples.
+        Learns dynamically from user-approved (👍) queries.
+        """
+        if not HAS_CHROMADB:
+            return ""
+        try:
+            print("🧠 [Chroma DB Few-Shot SQL RAG] Querying marklytix_sql_examples for verified patterns...")
+            start_fs_time = datetime.now()
+            storage_dir = os.path.join(os.path.dirname(__file__), "scratch", "chroma_db_storage")
+            if not os.path.exists(storage_dir):
+                return ""
+            import chromadb
+            client = chromadb.PersistentClient(path=storage_dir)
+            try:
+                sql_coll = client.get_collection(name="marklytix_sql_examples")
+            except Exception:
+                print("ℹ️  [Chroma DB Few-Shot SQL RAG] No marklytix_sql_examples collection found yet.")
+                return ""
 
+            # 1. First attempt targeted subcategory query if provided
+            res = None
+            if subcategory and subcategory.strip():
+                try:
+                    res = sql_coll.query(query_texts=[query], n_results=k, where={"subcategory": subcategory.strip().lower()})
+                except Exception:
+                    res = None
 
+            # 2. Fallback to global semantic search across all verified SQL examples
+            if not res or not res.get("documents") or not res["documents"][0]:
+                res = sql_coll.query(query_texts=[query], n_results=k)
 
+            fs_duration = (datetime.now() - start_fs_time).total_seconds()
+
+            if not res or not res.get("documents") or not res["documents"][0]:
+                print(f"ℹ️  [Chroma DB Few-Shot SQL RAG] 0 verified few-shot examples found for this query ({fs_duration:.3f}s)")
+                return ""
+
+            examples_text = []
+            docs = res["documents"][0]
+            metas = res["metadatas"][0] if res.get("metadatas") else [{}] * len(docs)
+            dists = res["distances"][0] if res.get("distances") else [0.5] * len(docs)
+
+            # Strict semantic distance threshold for SQL few-shots (L2 distance <= 1.05)
+            # This prevents unrelated domains (e.g. user lookup vs branch feedback) from being mistakenly injected
+            valid_matches = []
+            for doc, meta, dist in zip(docs, metas, dists):
+                if dist <= 1.05:
+                    valid_matches.append((doc, meta, dist))
+
+            # If top match is strong, only keep second match if it's close in distance (gap <= 0.25)
+            if len(valid_matches) > 1:
+                top_dist = valid_matches[0][2]
+                valid_matches = [m for m in valid_matches if (m[2] - top_dist) <= 0.25]
+
+            for i, (doc, meta, dist) in enumerate(valid_matches):
+                q_text = meta.get("question", "")
+                sql_text = meta.get("sql_query", "")
+                if q_text and sql_text:
+                    sql_preview = (sql_text[:80] + '...') if len(sql_text) > 80 else sql_text
+                    print(f"   ⭐ Match {i+1} (dist: {dist:.3f}): \"{q_text}\" -> `{sql_preview}`")
+                    examples_text.append(f"-- Verified Example {i+1}:\n-- User Intent: \"{q_text}\"\n-- T-SQL:\n{sql_text}")
+
+            if examples_text:
+                print(f"🌟 [GAP 5 CONTINUOUS RAG] Injected {len(examples_text)} verified few-shot SQL example(s) into prompt ({fs_duration:.3f}s)")
+                return "\n\n-- =========================================================\n-- VERIFIED FEW-SHOT SQL PATTERNS (CONTINUOUS FEEDBACK RAG):\n-- =========================================================\n" + "\n\n".join(examples_text) + "\n"
+            else:
+                print(f"ℹ️  [Chroma DB Few-Shot SQL RAG] 0 relevant few-shot matches below threshold <= 1.05 ({fs_duration:.3f}s)")
+                return ""
+        except Exception as e:
+            print(f"⚠️ [Gap 5 Few-Shot RAG Error]: {e}")
+            return ""
 
     def classify_table_schema_direct(self, message):
 
@@ -3219,6 +3289,9 @@ EXPANDED QUERY:"""
                 tables_str = ', '.join(available_tables)
                 schema_section = f"\nAVAILABLE TABLES FOR THIS QUERY: {tables_str}\n"
 
+            # Gap 5: Continuous Few-Shot RAG (Retrieve top verified user-approved SQL queries)
+            few_shot_examples = self.retrieve_top_k_sql_examples(clean_query, subcategory=subcategory, k=2)
+
             print("🔧 Creating complete prompt with user query and retrieved schemas...")
             if rag_schemas:
                 print(rag_schemas,'testing rag schemas')
@@ -3232,15 +3305,15 @@ STRICT INSTRUCTIONS:
 4. CRITICAL: When multiple tables contain similar columns (e.g. master tables vs backup _bkp tables), ALWAYS prefer active production tables with higher Production Priority Scores!
 
 AVAILABLE TABLE SCHEMAS:
-{rag_schemas} 
-
+{rag_schemas}
+{few_shot_examples}
 USER QUERY: "{message}"
 
 Respond strictly with ONLY the executable T-SQL query block (```sql ... ```). Do not include extra conversational explanations outside the code block.
 """
             else:
                 complete_prompt = f"""{specialized_prompt}
-
+{few_shot_examples}
 USER QUERY: "{message}"
 
 Respond strictly with ONLY the executable T-SQL query block.

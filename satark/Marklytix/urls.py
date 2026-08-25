@@ -34,4 +34,7 @@ urlpatterns = [
     path("api/subcategories/create/", views.create_subcategory, name="marklytix_create_subcategory"),
     path("api/subcategories/<int:subcategory_id>/update/", views.update_subcategory, name="marklytix_update_subcategory"),
     path("api/subcategories/<int:subcategory_id>/delete/", views.delete_subcategory, name="marklytix_delete_subcategory"),
+
+    # Gap 5: Automated Feedback Loop & Continuous RAG Indexing
+    path("api/feedback/", views.submit_query_feedback, name="marklytix_submit_feedback"),
 ]
