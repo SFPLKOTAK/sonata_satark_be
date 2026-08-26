@@ -729,11 +729,12 @@ CORRECTED T-SQL QUERY:"""
         if chat_id and is_first_message:
             self.chat_id = chat_id
 
-        # Prepare context for AI models
+        # Prepare context for AI models (Single-turn focused query for now)
         context_message = message
-        if conversation_history:
-            context = self.build_conversation_context(conversation_history)
-            context_message = f"Previous conversation context:\n{context}\n\nCurrent question: {message}"
+        # [DISABLED FOR NOW: Previous conversation context passed to LLM]
+        # if conversation_history:
+        #     context = self.build_conversation_context(conversation_history)
+        #     context_message = f"Previous conversation context:\n{context}\n\nCurrent question: {message}"
 
         # Generate cache key for the message
         cache_key = self.generate_cache_key(message)
@@ -866,12 +867,8 @@ CORRECTED T-SQL QUERY:"""
             print("🔍" + "-" * 50 + "🔍")
             start_time_3 = datetime.now()
             
-            effective_context = context_message
-            if was_expanded and "Current question:" in context_message:
-                ctx_prefix = context_message.split("Current question:")[0]
-                effective_context = f"{ctx_prefix}Current question: {search_query}"
-            elif was_expanded:
-                effective_context = search_query
+            # Use expanded or raw user question directly without previous multi-turn conversation prefix
+            effective_context = search_query if was_expanded else message
 
             table_result = self.select_tables_with_specialized_prompt(
                 effective_context,
@@ -1824,7 +1821,7 @@ CORRECTED T-SQL QUERY:"""
                 db_eng = getattr(self, 'engine', None) or get_shared_db_engine()
                 with db_eng.begin() as conn:
                     sql_res = conn.execute(text("""
-                        SELECT UserQuestion, GeneratedSQL, Category, Subcategory, TablesUsed, Rating
+                        SELECT UserQuestion, GeneratedSQL, Category, Subcategory, TablesUsed, Rating, FeedbackComments
                         FROM dbo.Marklytix_VerifiedQueryExamples
                         WHERE IsActive = 1
                     """)).fetchall()
@@ -1838,10 +1835,13 @@ CORRECTED T-SQL QUERY:"""
                             sub_val = row[3] or ""
                             tbls_val = row[4] or ""
                             rating_val = row[5] or "like"
+                            comments_val = row[6] or ""
                             
                             if q_text and sql_text:
                                 doc_id = f"sql_ex_{hashlib.md5(f'{q_text}_{sql_text}'.encode('utf-8')).hexdigest()[:12]}"
                                 doc_text = f"User Question: {q_text}\nTarget Subcategory: {sub_val}\nVerified T-SQL Query:\n{sql_text}"
+                                if comments_val:
+                                    doc_text += f"\nUser Feedback Notes: {comments_val}"
                                 
                                 ex_ids.append(doc_id)
                                 ex_docs.append(doc_text)
@@ -1851,11 +1851,12 @@ CORRECTED T-SQL QUERY:"""
                                     "category": cat_val,
                                     "subcategory": sub_val.lower() if sub_val else "",
                                     "tables_used": tbls_val,
-                                    "rating": rating_val
+                                    "rating": rating_val,
+                                    "feedback_comments": comments_val
                                 })
                         if ex_ids:
                             sql_coll.upsert(ids=ex_ids, documents=ex_docs, metadatas=ex_metas)
-                            print(f"🎉 [ChromaDB Auto-Syncer] Synced {len(ex_ids)} verified SQL few-shot examples from SQL Server into ChromaDB!")
+                            print(f"🎉 [ChromaDB Auto-Syncer] Synced {len(ex_ids)} verified SQL few-shot examples (with comments) from SQL Server into ChromaDB!")
             except Exception as e_fewshot:
                 print(f"⚠️ [ChromaDB Auto-Syncer Few-Shot SQL Sync Error]: {e_fewshot}")
 
@@ -2183,7 +2184,7 @@ Return ONLY a JSON array of selected column names, e.g. ["col_a", "col_b"]. Do n
             print(f"💥 Error in prune_table_schema for {table_name}: {err}")
             return raw_schema_text
 
-    def retrieve_top_k_schemas_chroma(self, query, k=10, prompt_k=2, table_names=None):
+    def retrieve_top_k_schemas_chroma(self, query, k=10, prompt_k=4, table_names=None):
         """
         Hybrid Global + Subcategory RAG Table Schema Retrieval with Dynamic Column Pruning:
         Combines global semantic vector search across all database tables
@@ -2358,17 +2359,38 @@ Return ONLY a JSON array of selected column names, e.g. ["col_a", "col_b"]. Do n
                 top_dist = valid_matches[0][2]
                 valid_matches = [m for m in valid_matches if (m[2] - top_dist) <= 0.25]
 
+            closest_comments = ""
             for i, (doc, meta, dist) in enumerate(valid_matches):
                 q_text = meta.get("question", "")
                 sql_text = meta.get("sql_query", "")
+                comments_text = (meta.get("feedback_comments") or "").strip()
+                if i == 0 and comments_text:
+                    closest_comments = comments_text
+
                 if q_text and sql_text:
                     sql_preview = (sql_text[:80] + '...') if len(sql_text) > 80 else sql_text
-                    print(f"   ⭐ Match {i+1} (dist: {dist:.3f}): \"{q_text}\" -> `{sql_preview}`")
-                    examples_text.append(f"-- Verified Example {i+1}:\n-- User Intent: \"{q_text}\"\n-- T-SQL:\n{sql_text}")
+                    print(f"   ⭐ Match {i+1} (dist: {dist:.3f}): \"{q_text}\" -> `{sql_preview}`" + (f" [Comments: '{comments_text}']" if comments_text else ""))
+                    
+                    ex_block = f"-- Verified Example {i+1}:\n-- User Intent: \"{q_text}\""
+                    if comments_text:
+                        ex_block += f"\n-- Verified Business Rule / Feedback Note: {comments_text}"
+                    ex_block += f"\n-- T-SQL:\n{sql_text}"
+                    examples_text.append(ex_block)
 
             if examples_text:
                 print(f"🌟 [GAP 5 CONTINUOUS RAG] Injected {len(examples_text)} verified few-shot SQL example(s) into prompt ({fs_duration:.3f}s)")
-                return "\n\n-- =========================================================\n-- VERIFIED FEW-SHOT SQL PATTERNS (CONTINUOUS FEEDBACK RAG):\n-- =========================================================\n" + "\n\n".join(examples_text) + "\n"
+                prompt_output = "\n\n-- =========================================================\n-- VERIFIED FEW-SHOT SQL PATTERNS (CONTINUOUS FEEDBACK RAG):\n-- =========================================================\n" + "\n\n".join(examples_text) + "\n"
+                
+                # Append explicit business rule directive from closest feedback query at the very end
+                if closest_comments:
+                    prompt_output += (
+                        f"\n-- =========================================================\n"
+                        f"-- ⚠️ CRITICAL BUSINESS RULE (FROM CLOSEST VERIFIED FEEDBACK):\n"
+                        f"-- User/Admin Note: \"{closest_comments}\"\n"
+                        f"-- MANDATORY INSTRUCTION: You MUST strictly incorporate and satisfy the above business rule in your generated T-SQL query!\n"
+                        f"-- =========================================================\n"
+                    )
+                return prompt_output
             else:
                 print(f"ℹ️  [Chroma DB Few-Shot SQL RAG] 0 relevant few-shot matches below threshold <= 1.05 ({fs_duration:.3f}s)")
                 return ""
@@ -2581,7 +2603,7 @@ Return ONLY a JSON array of selected column names, e.g. ["col_a", "col_b"]. Do n
         words = raw_query.split()
         
         # Smart Bypass: If prompt is already detailed (>=8 words or >=60 chars), return as-is
-        if len(words) >= 8 or len(raw_query) >= 60:
+        if len(words) >= 14 or len(raw_query) >= 90:
             return raw_query, False, 0.0
 
         start_t = datetime.now()
@@ -3310,7 +3332,7 @@ EXPANDED QUERY:"""
             if "Current question:" in clean_query:
                 clean_query = clean_query.split("Current question:")[-1].strip()
 
-            rag_schemas, retrieved_tables = self.retrieve_top_k_schemas_chroma(clean_query, k=10, prompt_k=2, table_names=available_tables)
+            rag_schemas, retrieved_tables = self.retrieve_top_k_schemas_chroma(clean_query, k=10, prompt_k=4, table_names=available_tables)
             end_time_0 = datetime.now()
             rag_time_taken = round((end_time_0 - start_time_0).total_seconds(), 3)
             

@@ -545,6 +545,7 @@ def submit_query_feedback(request):
         chat_id = data.get("chat_id")
         question = (data.get("question") or "").strip()
         generated_query = (data.get("generated_query") or "").strip()
+        rating = (data.get("rating") or "like").lower()
         category = data.get("category") or ""
         subcategory = data.get("subcategory") or ""
         tables_used = data.get("tables_used") or ""
@@ -581,9 +582,9 @@ def submit_query_feedback(request):
                         (UserQuestion, GeneratedSQL, Category, Subcategory, TablesUsed, Rating, FeedbackComments, IsActive)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, 1)
                     """, [question, generated_query, category, subcategory, tables_used, rating, feedback_text], fetch="none")
-                print(f"💾 [CENTRAL DB SYNC] Persisted verified SQL example into dbo.Marklytix_VerifiedQueryExamples")
+                print(f"[CENTRAL DB SYNC] Persisted verified SQL example into dbo.Marklytix_VerifiedQueryExamples")
             except Exception as dbe2:
-                print(f"⚠️ [CENTRAL DB SYNC ERROR]: {dbe2}")
+                print(f"[CENTRAL DB SYNC ERROR]: {dbe2}")
 
             # 3. Upsert into local ChromaDB marklytix_sql_examples collection for instant local vector search
             storage_dir = os.path.join(os.path.dirname(__file__), "scratch", "chroma_db_storage")
@@ -597,6 +598,8 @@ def submit_query_feedback(request):
                 
                 doc_id = f"sql_ex_{hashlib.md5(f'{question}_{generated_query}'.encode('utf-8')).hexdigest()[:12]}"
                 doc_text = f"User Question: {question}\nTarget Subcategory: {subcategory}\nVerified T-SQL Query:\n{generated_query}"
+                if feedback_text:
+                    doc_text += f"\nUser Feedback Notes: {feedback_text}"
                 
                 sql_coll.upsert(
                     ids=[doc_id],
@@ -604,14 +607,16 @@ def submit_query_feedback(request):
                     metadatas=[{
                         "question": question,
                         "sql_query": generated_query,
+                        "category": category,
                         "subcategory": subcategory.lower() if subcategory else "",
                         "tables_used": tables_used,
                         "rating": rating,
+                        "feedback_comments": feedback_text or "",
                         "timestamp": datetime.now().isoformat()
                     }]
                 )
                 indexed = True
-                print(f"🌟 [GAP 5 FEEDBACK FLYWHEEL] Indexed verified few-shot SQL query into ChromaDB ({doc_id})")
+                print(f"[GAP 5 FEEDBACK FLYWHEEL] Indexed verified few-shot SQL query into ChromaDB ({doc_id}) with comments: '{feedback_text}'")
 
         return JsonResponse({
             "success": True,
