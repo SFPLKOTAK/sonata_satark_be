@@ -711,13 +711,18 @@ CORRECTED T-SQL QUERY:"""
         message = data['message']
         username = data['username']
 
+        # Step 1: Multilingual Auto-Detection & Input Translation Agent
+        user_lang_param = data.get('language') or data.get('selected_language') or getattr(self, 'language', None)
+        english_message, target_user_language, was_translated_input, trans_input_time = self.detect_and_translate_to_english(message, user_lang_param)
+        search_target_message = english_message if was_translated_input else message
+
         # Skip acknowledgment for internal commands
         if message not in ("cache_stats", "clear_cache", "download_csv"):
             # Send immediate acknowledgment so frontend shows activity instantly
-            # instead of showing blank 'Thinking...' during Redis cache lookup
+            display_msg = message if not was_translated_input else f"{message} (EN: {search_target_message})"
             self.send(json.dumps({
                 'type': 'progress',
-                'message': f'Received query: "{message[:60]}{"..." if len(message) > 60 else ""}"'
+                'message': f'Received query ({target_user_language.capitalize()}): "{display_msg[:65]}{"..." if len(display_msg) > 65 else ""}"'
             }))
 
         # Handle conversation history context
@@ -730,7 +735,7 @@ CORRECTED T-SQL QUERY:"""
             self.chat_id = chat_id
 
         # Prepare context for AI models (Single-turn focused query for now)
-        context_message = message
+        context_message = search_target_message
         # [DISABLED FOR NOW: Previous conversation context passed to LLM]
         # if conversation_history:
         #     context = self.build_conversation_context(conversation_history)
@@ -795,7 +800,7 @@ CORRECTED T-SQL QUERY:"""
         print("🔍" + "-" * 50 + "🔍")
         print("🎯 LEVEL -1: PRE-CLASSIFICATION PROMPT ENHANCER 🎯")
         print("🔍" + "-" * 50 + "🔍")
-        search_query, was_expanded, expand_time = self.expand_user_prompt(message)
+        search_query, was_expanded, expand_time = self.expand_user_prompt(search_target_message)
         
         if was_expanded:
             print(f"⚡ [PROMPT EXPANDER SUCCESS] Expanded in {expand_time:.3f}s:")
@@ -971,6 +976,15 @@ CORRECTED T-SQL QUERY:"""
                 table = ""
             print("")
        
+        # Step 4: Multilingual Output Translation Agent (Translates AI summary to user's detected target language)
+        translated_output, was_translated_output, trans_output_time = self.translate_to_user_language(output, target_user_language)
+        if was_translated_output and translated_output:
+            output = translated_output
+
+        # Clean up any unwanted LLM markdown backslash escapes (e.g. AUDIT\_27775 -> AUDIT_27775)
+        if isinstance(output, str):
+            output = output.replace(r'\_', '_')
+
         # Calculate total execution time
         total_execution_time = (datetime.now() - start_time).total_seconds()
         logs_list = list(getattr(self, 'execution_logs', []))
@@ -983,14 +997,25 @@ CORRECTED T-SQL QUERY:"""
             'ai_response': output,
             'generated_query': table_result['query'],
             'ai_response_table': table,
+            'selected_language': target_user_language,
             
             # Overall timing information
             'total_execution_time': total_execution_time,
             
             # Hierarchical search details — omit for general chitchat so the frontend hides the Process Log tab
             'hierarchical_search': None if category_result['category'].lower().strip() == 'general' else {
-                'level_minus_1_expander': {
+                'multilingual': {
+                    'selected_language': target_user_language,
+                    'is_multilingual_mode': target_user_language not in ('english', 'en'),
                     'original_query': message,
+                    'translated_english_query': search_target_message,
+                    'was_input_translated': was_translated_input,
+                    'was_output_translated': was_translated_output if 'was_translated_output' in locals() else False,
+                    'input_translation_time': trans_input_time if 'trans_input_time' in locals() else 0.0,
+                    'output_translation_time': trans_output_time if 'trans_output_time' in locals() else 0.0
+                },
+                'level_minus_1_expander': {
+                    'original_query': search_target_message,
                     'expanded_query': search_query,
                     'was_expanded': was_expanded,
                     'time_taken': expand_time
@@ -2591,6 +2616,113 @@ Return ONLY a JSON array of selected column names, e.g. ["col_a", "col_b"]. Do n
                     }
         except Exception as e_glob:
             print(f"[ChromaDB] Subcategory global search error: {e_glob}")
+
+    def detect_and_translate_to_english(self, message, source_language=None):
+        """
+        Multilingual Input Agent with Auto-Detection:
+        1. Checks if source_language is explicitly provided (e.g. 'hindi', 'spanish', 'tamil', etc.).
+        2. If source_language is missing, 'english', or 'auto', checks for non-English Unicode scripts or auto-detects via LLM.
+        3. If non-English is detected, translates input query to English and returns (english_text, detected_language, was_translated, elapsed).
+        """
+        raw_msg = message.strip() if message else ""
+        if not raw_msg:
+            return raw_msg, "english", False, 0.0
+
+        lang_clean = (source_language or "").strip().lower()
+        
+        # Fast Unicode script check for non-Latin languages (Hindi/Devanagari \u0900-\u097F, Tamil, Telugu, Bengali, Arabic, Cyrillic, Chinese, etc.)
+        import re
+        has_non_latin = bool(re.search(r'[\u0900-\u0DFF\u0600-\u06FF\u0400-\u04FF\u4E00-\u9FFF]', raw_msg))
+        
+        is_explicit_non_english = lang_clean not in ("", "english", "en", "default", "auto")
+        
+        if not is_explicit_non_english and not has_non_latin and lang_clean in ("english", "en", "default"):
+            return raw_msg, "english", False, 0.0
+
+        start_t = datetime.now()
+        target_lang = lang_clean if is_explicit_non_english else ("hindi" if has_non_latin else "auto")
+        
+        try:
+            translation_prompt = f"""You are a professional natural language translator and language detector for an enterprise database query system.
+Analyze the user question below:
+1. Detect the language of the question (e.g. Hindi, Spanish, Tamil, French, German, Bengali, Marathi, etc.).
+2. Translate the question into clear, precise English for SQL database classification and query execution.
+
+RULES:
+1. Maintain exact entity names, numbers, codes, dates, and intent.
+2. Output ONLY a valid JSON object in this exact format:
+{{"detected_language": "Hindi", "english_translation": "give me user details of the user 27775"}}
+
+USER QUESTION: "{raw_msg}"
+
+JSON RESPONSE:"""
+
+            response = self.query_model.generate_content([translation_prompt])
+            raw_text = response.text.strip()
+            
+            clean_json = re.sub(r"```json\s*|```\s*", "", raw_text).strip()
+            res_dict = json.loads(clean_json)
+            
+            detected_lang = res_dict.get("detected_language", target_lang).strip().lower()
+            translated_text = res_dict.get("english_translation", raw_msg).strip()
+            
+            elapsed = round((datetime.now() - start_t).total_seconds(), 3)
+            
+            if detected_lang not in ("english", "en") or translated_text != raw_msg:
+                print(f"🌐 [MULTILINGUAL AUTO-DETECTOR] Detected language '{detected_lang.upper()}' ({elapsed}s):")
+                print(f"   Original ({detected_lang}): \"{raw_msg}\"")
+                print(f"   English Translation: \"{translated_text}\"")
+                return translated_text, detected_lang, True, elapsed
+                
+            return raw_msg, "english", False, elapsed
+        except Exception as e:
+            print(f"⚠️ [MULTILINGUAL AUTO-DETECTOR ERROR]: {e}")
+            fallback_lang = "hindi" if has_non_latin else "english"
+            elapsed = round((datetime.now() - start_t).total_seconds(), 3)
+            return raw_msg, fallback_lang, has_non_latin, elapsed
+
+    def translate_to_user_language(self, ai_text, target_language):
+        """
+        Multilingual Output Agent: Translates generated English AI response summary into target_language.
+        If target_language is 'english' or 'en', bypasses translation completely (0.0s).
+        """
+        if not ai_text:
+            return ai_text, False, 0.0
+
+        lang_clean = (target_language or "english").strip().lower()
+        if lang_clean in ("english", "en", "default"):
+            return ai_text, False, 0.0
+
+        start_t = datetime.now()
+        try:
+            output_translation_prompt = f"""You are a professional AI translator. Translate the following English database summary into {lang_clean.capitalize()}.
+
+RULES:
+1. Preserve numbers, names, codes, dates, and numerical metrics accurately.
+2. Keep the tone friendly, professional, and natural in {lang_clean.capitalize()}.
+3. Output ONLY the translated response text. Do NOT add conversational meta-disclaimers.
+
+ENGLISH AI RESPONSE:
+{ai_text}
+
+TRANSLATED RESPONSE ({lang_clean.upper()}):"""
+
+            response = self.interpreter_model.generate_content([output_translation_prompt])
+            translated_response = response.text.strip()
+            
+            if 'TRANSLATED RESPONSE' in translated_response:
+                translated_response = translated_response.split(':')[-1].strip()
+                
+            elapsed = round((datetime.now() - start_t).total_seconds(), 3)
+            
+            if translated_response:
+                print(f"🌐 [MULTILINGUAL OUTPUT AGENT] Translated AI response to {lang_clean.upper()} ({elapsed}s).")
+                return translated_response, True, elapsed
+            return ai_text, False, elapsed
+        except Exception as e:
+            print(f"⚠️ [MULTILINGUAL OUTPUT AGENT ERROR]: {e}")
+            elapsed = round((datetime.now() - start_t).total_seconds(), 3)
+            return ai_text, False, elapsed
 
     def expand_user_prompt(self, message):
         """
