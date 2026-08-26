@@ -2763,6 +2763,7 @@ RULES:
 4. Do NOT generate SQL code or markdown blocks. Output ONLY the expanded natural language query text.
 5. DO NOT CHANGE THE MEANING OF THE ASKED QUESTION.
 6. STRICTLY PRESERVE CORE NOUNS: Do NOT introduce unmentioned topic nouns or metrics. For example, if the user asks for 'feedback', do NOT insert 'performance' or 'metrics' — keep 'feedback' intact to hit tables like audit_branch_checklist_feedback.
+7. SIMPLE GREETINGS / GENERIC CONVERSATIONAL INPUTS: If the input is a simple greeting, pleasantry, or general non-database message (e.g. "hi", "hello", "hey", "good morning", "thanks", "who are you", "bye"), DO NOT EXPAND IT into a database query. Output the user's input EXACTLY AS-IS without adding any database terms, assistant intros, or extra words.
 
 SHORTHAND QUERY: "{raw_query}"
 
@@ -2781,7 +2782,14 @@ EXPANDED QUERY:"""
                 
             elapsed = round((datetime.now() - start_t).total_seconds(), 3)
             
-            if expanded_text and len(expanded_text) >= len(raw_query):
+            # If LLM returned the original text (or minor punctuation difference for simple greetings), do NOT mark as expanded
+            clean_expanded = expanded_text.strip('\'" .!').lower()
+            clean_raw = raw_query.strip('\'" .!').lower()
+            
+            if clean_expanded == clean_raw or not expanded_text:
+                return raw_query, False, elapsed
+                
+            if len(expanded_text) > len(raw_query):
                 return expanded_text, True, elapsed
             return raw_query, False, elapsed
         except Exception as e:
