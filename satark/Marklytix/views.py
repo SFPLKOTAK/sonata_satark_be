@@ -564,31 +564,51 @@ def submit_query_feedback(request):
             pass
             
         indexed = False
-        # 2. If positive rating and query is present, persist into central SQL Server table dbo.Marklytix_VerifiedQueryExamples
+        evicted = False
+        trust_score = 1
+        doc_id = f"sql_ex_{hashlib.md5(f'{question}_{generated_query}'.encode('utf-8')).hexdigest()[:12]}" if question and generated_query else ""
+        storage_dir = os.path.join(os.path.dirname(__file__), "scratch", "chroma_db_storage")
+
+        # 2. Handle Positive Rating (👍 Like / Verified)
         if rating in ("like", "thumbs_up", "positive", "verified") and question and generated_query:
             try:
-                existing = _exec("SELECT Id FROM dbo.Marklytix_VerifiedQueryExamples WHERE LOWER(UserQuestion) = LOWER(%s)", [question], fetch="one")
+                existing = _exec("""
+                    SELECT Id, COALESCE(LikeCount, 0), COALESCE(DislikeCount, 0)
+                    FROM dbo.Marklytix_VerifiedQueryExamples
+                    WHERE LOWER(UserQuestion) = LOWER(%s)
+                """, [question], fetch="one")
+
                 if existing:
+                    new_likes = existing[1] + 1
+                    dislikes = existing[2]
+                    trust_score = new_likes - (2 * dislikes)
+                    is_active = 1 if trust_score > 0 else 0
+                    status = 'Active' if trust_score > 0 else 'Flagged_Poison'
+
                     _exec("""
                         UPDATE dbo.Marklytix_VerifiedQueryExamples
                         SET GeneratedSQL = %s, Category = COALESCE(NULLIF(%s, ''), Category),
                             Subcategory = COALESCE(NULLIF(%s, ''), Subcategory), TablesUsed = COALESCE(NULLIF(%s, ''), TablesUsed),
-                            Rating = %s, FeedbackComments = %s, ModifiedDate = GETDATE(), IsActive = 1
+                            Rating = %s, FeedbackComments = COALESCE(NULLIF(%s, ''), FeedbackComments),
+                            LikeCount = %s, DislikeCount = %s, TrustScore = %s, Status = %s,
+                            ModifiedDate = GETDATE(), IsActive = %s
                         WHERE Id = %s
-                    """, [generated_query, category, subcategory, tables_used, rating, feedback_text, existing[0]], fetch="none")
+                    """, [generated_query, category, subcategory, tables_used, rating, feedback_text,
+                          new_likes, dislikes, trust_score, status, is_active, existing[0]], fetch="none")
                 else:
+                    trust_score = 1
                     _exec("""
                         INSERT INTO dbo.Marklytix_VerifiedQueryExamples
-                        (UserQuestion, GeneratedSQL, Category, Subcategory, TablesUsed, Rating, FeedbackComments, IsActive)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, 1)
+                        (UserQuestion, GeneratedSQL, Category, Subcategory, TablesUsed, Rating, FeedbackComments, LikeCount, DislikeCount, TrustScore, Status, IsActive)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, 1, 0, 1, 'Active', 1)
                     """, [question, generated_query, category, subcategory, tables_used, rating, feedback_text], fetch="none")
-                print(f"[CENTRAL DB SYNC] Persisted verified SQL example into dbo.Marklytix_VerifiedQueryExamples")
+
+                print(f"[CENTRAL DB SYNC] Persisted verified SQL example (TrustScore: {trust_score}) into dbo.Marklytix_VerifiedQueryExamples")
             except Exception as dbe2:
                 print(f"[CENTRAL DB SYNC ERROR]: {dbe2}")
 
-            # 3. Upsert into local ChromaDB marklytix_sql_examples collection for instant local vector search
-            storage_dir = os.path.join(os.path.dirname(__file__), "scratch", "chroma_db_storage")
-            if os.path.exists(storage_dir):
+            # Upsert into ChromaDB if TrustScore > 0
+            if trust_score > 0 and os.path.exists(storage_dir):
                 import chromadb
                 client = chromadb.PersistentClient(path=storage_dir)
                 sql_coll = client.get_or_create_collection(
@@ -596,7 +616,6 @@ def submit_query_feedback(request):
                     metadata={"description": "Few-Shot Verified SQL Query Examples for Dynamic RAG Ingestion"}
                 )
                 
-                doc_id = f"sql_ex_{hashlib.md5(f'{question}_{generated_query}'.encode('utf-8')).hexdigest()[:12]}"
                 doc_text = f"User Question: {question}\nTarget Subcategory: {subcategory}\nVerified T-SQL Query:\n{generated_query}"
                 if feedback_text:
                     doc_text += f"\nUser Feedback Notes: {feedback_text}"
@@ -612,16 +631,66 @@ def submit_query_feedback(request):
                         "tables_used": tables_used,
                         "rating": rating,
                         "feedback_comments": feedback_text or "",
+                        "trust_score": int(trust_score),
                         "timestamp": datetime.now().isoformat()
                     }]
                 )
                 indexed = True
-                print(f"[GAP 5 FEEDBACK FLYWHEEL] Indexed verified few-shot SQL query into ChromaDB ({doc_id}) with comments: '{feedback_text}'")
+                print(f"[GAP 5 FEEDBACK FLYWHEEL] Indexed consensus SQL query into ChromaDB ({doc_id}) [TrustScore: {trust_score}]")
+
+        # 3. Handle Negative Rating (👎 Dislike / Demotion & Poison Eviction)
+        elif rating in ("dislike", "thumbs_down", "negative") and question:
+            try:
+                existing = _exec("""
+                    SELECT Id, COALESCE(LikeCount, 0), COALESCE(DislikeCount, 0)
+                    FROM dbo.Marklytix_VerifiedQueryExamples
+                    WHERE LOWER(UserQuestion) = LOWER(%s)
+                """, [question], fetch="one")
+
+                if existing:
+                    likes = existing[1]
+                    new_dislikes = existing[2] + 1
+                    trust_score = likes - (2 * new_dislikes)
+                    is_active = 1 if trust_score > 0 else 0
+                    status = 'Active' if trust_score > 0 else 'Flagged_Poison'
+
+                    _exec("""
+                        UPDATE dbo.Marklytix_VerifiedQueryExamples
+                        SET Rating = %s, DislikeCount = %s, TrustScore = %s, Status = %s,
+                            FeedbackComments = COALESCE(NULLIF(%s, ''), FeedbackComments),
+                            ModifiedDate = GETDATE(), IsActive = %s
+                        WHERE Id = %s
+                    """, [rating, new_dislikes, trust_score, status, feedback_text, is_active, existing[0]], fetch="none")
+                    print(f"[CENTRAL DB DEMOTION] Updated query with Dislike. New TrustScore: {trust_score} (Active: {is_active})")
+                else:
+                    trust_score = -2
+                    _exec("""
+                        INSERT INTO dbo.Marklytix_VerifiedQueryExamples
+                        (UserQuestion, GeneratedSQL, Category, Subcategory, TablesUsed, Rating, FeedbackComments, LikeCount, DislikeCount, TrustScore, Status, IsActive)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, 0, 1, -2, 'Flagged_Poison', 0)
+                    """, [question, generated_query, category, subcategory, tables_used, rating, feedback_text], fetch="none")
+
+                # If TrustScore <= 0, automatically evict/purge from ChromaDB vector store
+                if trust_score <= 0 and os.path.exists(storage_dir):
+                    import chromadb
+                    client = chromadb.PersistentClient(path=storage_dir)
+                    try:
+                        sql_coll = client.get_collection(name="marklytix_sql_examples")
+                        sql_coll.delete(where={"question": question})
+                        evicted = True
+                        print(f"[POISON EVICTION] Successfully evicted/purged poisoned query '{question}' from ChromaDB!")
+                    except Exception as del_err:
+                        print(f"[POISON EVICTION NOTICE]: {del_err}")
+
+            except Exception as dbe3:
+                print(f"[CENTRAL DB DISLIKE ERROR]: {dbe3}")
 
         return JsonResponse({
             "success": True,
-            "message": "Feedback recorded successfully" + (" and query indexed into few-shot knowledge base." if indexed else "."),
-            "indexed": indexed
+            "message": "Feedback recorded successfully." + (" Query promoted to verified consensus knowledge base." if indexed else (" Query demoted and evicted from vector memory." if evicted else "")),
+            "indexed": indexed,
+            "evicted": evicted,
+            "trust_score": trust_score
         })
     except Exception as e:
         return JsonResponse({"success": False, "message": str(e)}, status=500)

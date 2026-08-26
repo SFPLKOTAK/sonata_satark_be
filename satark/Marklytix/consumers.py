@@ -1846,9 +1846,10 @@ CORRECTED T-SQL QUERY:"""
                 db_eng = getattr(self, 'engine', None) or get_shared_db_engine()
                 with db_eng.begin() as conn:
                     sql_res = conn.execute(text("""
-                        SELECT UserQuestion, GeneratedSQL, Category, Subcategory, TablesUsed, Rating, FeedbackComments
+                        SELECT UserQuestion, GeneratedSQL, Category, Subcategory, TablesUsed, Rating, FeedbackComments,
+                               COALESCE(TrustScore, 1) as TrustScore, COALESCE(LikeCount, 1) as LikeCount, COALESCE(DislikeCount, 0) as DislikeCount
                         FROM dbo.Marklytix_VerifiedQueryExamples
-                        WHERE IsActive = 1
+                        WHERE IsActive = 1 AND COALESCE(TrustScore, 1) > 0
                     """)).fetchall()
                     
                     if sql_res:
@@ -1861,8 +1862,9 @@ CORRECTED T-SQL QUERY:"""
                             tbls_val = row[4] or ""
                             rating_val = row[5] or "like"
                             comments_val = row[6] or ""
+                            trust_val = int(row[7]) if row[7] is not None else 1
                             
-                            if q_text and sql_text:
+                            if q_text and sql_text and trust_val > 0:
                                 doc_id = f"sql_ex_{hashlib.md5(f'{q_text}_{sql_text}'.encode('utf-8')).hexdigest()[:12]}"
                                 doc_text = f"User Question: {q_text}\nTarget Subcategory: {sub_val}\nVerified T-SQL Query:\n{sql_text}"
                                 if comments_val:
@@ -1877,11 +1879,12 @@ CORRECTED T-SQL QUERY:"""
                                     "subcategory": sub_val.lower() if sub_val else "",
                                     "tables_used": tbls_val,
                                     "rating": rating_val,
-                                    "feedback_comments": comments_val
+                                    "feedback_comments": comments_val,
+                                    "trust_score": trust_val
                                 })
                         if ex_ids:
                             sql_coll.upsert(ids=ex_ids, documents=ex_docs, metadatas=ex_metas)
-                            print(f"🎉 [ChromaDB Auto-Syncer] Synced {len(ex_ids)} verified SQL few-shot examples (with comments) from SQL Server into ChromaDB!")
+                            print(f"🎉 [ChromaDB Auto-Syncer] Synced {len(ex_ids)} verified consensus SQL few-shot examples (TrustScore > 0) from SQL Server into ChromaDB!")
             except Exception as e_fewshot:
                 print(f"⚠️ [ChromaDB Auto-Syncer Few-Shot SQL Sync Error]: {e_fewshot}")
 
@@ -2372,20 +2375,30 @@ Return ONLY a JSON array of selected column names, e.g. ["col_a", "col_b"]. Do n
             metas = res["metadatas"][0] if res.get("metadatas") else [{}] * len(docs)
             dists = res["distances"][0] if res.get("distances") else [0.5] * len(docs)
 
-            # Strict semantic distance threshold for SQL few-shots (L2 distance <= 1.05)
-            # This prevents unrelated domains (e.g. user lookup vs branch feedback) from being mistakenly injected
+            # Strict semantic distance threshold (L2 distance <= 1.05) & Positive Trust Score Check
+            # Automatically filters out any blacklisted or quarantined queries with trust_score <= 0
             valid_matches = []
             for doc, meta, dist in zip(docs, metas, dists):
-                if dist <= 1.05:
-                    valid_matches.append((doc, meta, dist))
+                t_score = meta.get("trust_score", 1)
+                try:
+                    t_score = int(t_score)
+                except Exception:
+                    t_score = 1
 
-            # If top match is strong, only keep second match if it's close in distance (gap <= 0.25)
-            if len(valid_matches) > 1:
-                top_dist = valid_matches[0][2]
-                valid_matches = [m for m in valid_matches if (m[2] - top_dist) <= 0.25]
+                # Only include positive trust score queries that meet semantic relevance
+                if dist <= 1.05 and t_score > 0:
+                    # Consensus score combines semantic closeness with crowd agreement weight
+                    consensus_score = round((1.05 - dist) + (0.15 * min(t_score, 4)), 4)
+                    valid_matches.append((doc, meta, dist, t_score, consensus_score))
+
+            # Sort matches by consensus score descending (most agreed-upon correct queries first)
+            valid_matches.sort(key=lambda m: m[4], reverse=True)
+
+            # Limit to top k (1 to 3) verified queries
+            valid_matches = valid_matches[:k]
 
             closest_comments = ""
-            for i, (doc, meta, dist) in enumerate(valid_matches):
+            for i, (doc, meta, dist, t_score, c_score) in enumerate(valid_matches):
                 q_text = meta.get("question", "")
                 sql_text = meta.get("sql_query", "")
                 comments_text = (meta.get("feedback_comments") or "").strip()
@@ -2394,16 +2407,16 @@ Return ONLY a JSON array of selected column names, e.g. ["col_a", "col_b"]. Do n
 
                 if q_text and sql_text:
                     sql_preview = (sql_text[:80] + '...') if len(sql_text) > 80 else sql_text
-                    print(f"   ⭐ Match {i+1} (dist: {dist:.3f}): \"{q_text}\" -> `{sql_preview}`" + (f" [Comments: '{comments_text}']" if comments_text else ""))
+                    print(f"   ⭐ Consensus Match {i+1} (dist: {dist:.3f}, trust: +{t_score}): \"{q_text}\" -> `{sql_preview}`" + (f" [Comments: '{comments_text}']" if comments_text else ""))
                     
-                    ex_block = f"-- Verified Example {i+1}:\n-- User Intent: \"{q_text}\""
+                    ex_block = f"-- Verified Consensus Example {i+1} (Trust Score: +{t_score}):\n-- User Intent: \"{q_text}\""
                     if comments_text:
                         ex_block += f"\n-- Verified Business Rule / Feedback Note: {comments_text}"
                     ex_block += f"\n-- T-SQL:\n{sql_text}"
                     examples_text.append(ex_block)
 
             if examples_text:
-                print(f"🌟 [GAP 5 CONTINUOUS RAG] Injected {len(examples_text)} verified few-shot SQL example(s) into prompt ({fs_duration:.3f}s)")
+                print(f"🌟 [GAP 5 CONTINUOUS RAG] Injected {len(examples_text)} verified consensus few-shot SQL example(s) into prompt ({fs_duration:.3f}s)")
                 prompt_output = "\n\n-- =========================================================\n-- VERIFIED FEW-SHOT SQL PATTERNS (CONTINUOUS FEEDBACK RAG):\n-- =========================================================\n" + "\n\n".join(examples_text) + "\n"
                 
                 # Append explicit business rule directive from closest feedback query at the very end
@@ -2417,7 +2430,7 @@ Return ONLY a JSON array of selected column names, e.g. ["col_a", "col_b"]. Do n
                     )
                 return prompt_output
             else:
-                print(f"ℹ️  [Chroma DB Few-Shot SQL RAG] 0 relevant few-shot matches below threshold <= 1.05 ({fs_duration:.3f}s)")
+                print(f"ℹ️  [Chroma DB Few-Shot SQL RAG] 0 relevant few-shot matches with positive trust score ({fs_duration:.3f}s)")
                 return ""
         except Exception as e:
             print(f"⚠️ [Gap 5 Few-Shot RAG Error]: {e}")
