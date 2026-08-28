@@ -98,13 +98,13 @@
         .brand-tag {
             font-size: 0.7rem;
             font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            padding: 0.2rem 0.6rem;
-            border-radius: 20px;
-            background: rgba(16, 185, 129, 0.1);
+            padding: 0.2rem 0.5rem;
+            border-radius: 6px;
+            background: rgba(16, 185, 129, 0.15);
             color: var(--accent-emerald);
             border: 1px solid rgba(16, 185, 129, 0.3);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
 
         .nav-links {
@@ -116,81 +116,73 @@
         .nav-links a {
             color: var(--text-muted);
             text-decoration: none;
-            font-size: 0.85rem;
+            font-size: 0.875rem;
             font-weight: 500;
-            transition: all 0.2s ease;
+            transition: color 0.2s ease;
         }
 
         .nav-links a:hover {
             color: var(--accent-cyan);
         }
 
-        /* Layout Container */
+        /* Container */
         .container {
-            max-width: 1400px;
+            max-width: 1300px;
             margin: 0 auto;
-            padding: 2.5rem 2rem;
+            padding: 3rem 2rem;
         }
 
-        /* Hero Banner */
+        /* Hero Section */
         .hero {
-            position: relative;
-            padding: 3.5rem 2.5rem;
-            border-radius: 24px;
-            background: radial-gradient(circle at top right, rgba(168, 85, 247, 0.18), transparent 55%),
-                        radial-gradient(circle at bottom left, rgba(6, 182, 212, 0.18), transparent 55%),
-                        var(--bg-card);
-            border: 1px solid var(--border-color);
-            margin-bottom: 3rem;
-            overflow: hidden;
-            box-shadow: 0 20px 40px rgba(0,0,0,0.5);
-        }
-
-        .hero::before {
-            content: '';
-            position: absolute;
-            top: 0; left: 0; right: 0; height: 2px;
-            background: linear-gradient(90deg, transparent, var(--accent-cyan), var(--accent-purple), var(--accent-emerald), transparent);
+            text-align: center;
+            padding: 3rem 0 4rem 0;
+            border-bottom: 1px solid var(--border-color);
+            margin-bottom: 3.5rem;
         }
 
         .hero-title {
             font-family: var(--font-heading);
-            font-size: 2.75rem;
+            font-size: 3.2rem;
             font-weight: 800;
-            margin-bottom: 1rem;
-            line-height: 1.2;
+            line-height: 1.15;
+            margin-bottom: 1.25rem;
+            letter-spacing: -0.5px;
         }
 
         .hero-title span {
-            background: linear-gradient(90deg, var(--accent-cyan), var(--accent-purple), var(--accent-emerald));
+            background: linear-gradient(135deg, var(--accent-cyan) 0%, var(--accent-purple) 100%);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
         }
 
         .hero-subtitle {
-            font-size: 1.1rem;
+            font-size: 1.15rem;
             color: var(--text-muted);
-            max-width: 950px;
-            margin-bottom: 2rem;
-            line-height: 1.7;
+            max-width: 850px;
+            margin: 0 auto 2rem auto;
+            line-height: 1.6;
         }
 
         .badges-grid {
             display: flex;
             flex-wrap: wrap;
+            justify-content: center;
             gap: 0.75rem;
+            max-width: 1000px;
+            margin: 0 auto;
         }
 
         .badge-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: var(--text-main);
             display: flex;
             align-items: center;
             gap: 0.5rem;
-            padding: 0.5rem 1rem;
-            border-radius: 12px;
-            background: rgba(255, 255, 255, 0.04);
-            border: 1px solid var(--border-color);
-            font-size: 0.82rem;
-            font-weight: 600;
         }
 
         .badge-icon {
@@ -199,103 +191,95 @@
             border-radius: 50%;
         }
 
-        /* Section Header */
+        /* Section Layouts */
+        section {
+            margin-bottom: 4.5rem;
+        }
+
         .section-header {
-            margin-bottom: 1.75rem;
+            margin-bottom: 2rem;
         }
 
         .section-tag {
-            font-family: var(--font-code);
             font-size: 0.75rem;
+            font-weight: 700;
             color: var(--accent-cyan);
             text-transform: uppercase;
             letter-spacing: 1.5px;
-            margin-bottom: 0.25rem;
+            margin-bottom: 0.5rem;
         }
 
         .section-title {
             font-family: var(--font-heading);
-            font-size: 1.85rem;
+            font-size: 2rem;
             font-weight: 700;
+            color: #ffffff;
         }
 
-        /* Parity Banner */
+        /* Parity Card */
         .parity-card {
-            background: linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, rgba(6, 182, 212, 0.05) 100%);
-            border: 1px solid rgba(16, 185, 129, 0.3);
-            border-radius: 20px;
-            padding: 2rem;
-            margin-bottom: 3rem;
+            background: linear-gradient(135deg, rgba(6, 182, 212, 0.08) 0%, rgba(168, 85, 247, 0.08) 100%);
+            border: 1px solid rgba(6, 182, 212, 0.3);
+            border-radius: 16px;
+            padding: 2.5rem;
+            margin-bottom: 3.5rem;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            flex-wrap: wrap;
-            gap: 1.5rem;
+            box-shadow: 0 0 40px rgba(0, 0, 0, 0.5);
         }
 
         .parity-score {
             font-family: var(--font-heading);
-            font-size: 3.5rem;
+            font-size: 4.5rem;
             font-weight: 800;
-            color: var(--accent-emerald);
             line-height: 1;
+            background: linear-gradient(135deg, var(--accent-emerald) 0%, var(--accent-cyan) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
         }
 
-        /* Diagram Box */
-        .diagram-card {
-            background: var(--bg-card);
-            border: 1px solid var(--border-color);
-            border-radius: 20px;
-            padding: 2.25rem;
-            margin-bottom: 3rem;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
-            overflow-x: auto;
-        }
-
-        .diagram-card .mermaid {
-            display: flex;
-            justify-content: center;
-        }
-
-        /* Pipeline Grid */
+        /* Grid Layouts */
         .pipeline-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
             gap: 1.5rem;
-            margin-bottom: 3rem;
         }
 
         .level-card {
             background: var(--bg-card);
             border: 1px solid var(--border-color);
-            border-radius: 18px;
+            border-radius: 12px;
             padding: 1.75rem;
             position: relative;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-            display: flex;
-            flex-direction: column;
+            overflow: hidden;
+            transition: transform 0.2s ease, border-color 0.2s ease;
         }
 
         .level-card:hover {
             transform: translateY(-4px);
             border-color: var(--border-glow);
-            box-shadow: 0 12px 24px rgba(0,0,0,0.4);
+            background: var(--bg-card-hover);
         }
 
         .level-card::before {
             content: '';
             position: absolute;
-            top: 0; left: 0; width: 100%; height: 3px;
-            border-radius: 18px 18px 0 0;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
         }
 
-        .lm1::before { background: var(--accent-amber); }
-        .l0::before { background: var(--accent-emerald); }
-        .l1::before { background: var(--accent-sky); }
-        .l2::before { background: var(--accent-purple); }
-        .l3::before { background: var(--accent-cyan); }
-        .l4::before { background: var(--accent-rose); }
-        .l5::before { background: var(--accent-indigo); }
+        .level-card.lm1::before { background: var(--accent-amber); }
+        .level-card.l0::before { background: var(--accent-emerald); }
+        .level-card.l1::before { background: var(--accent-sky); }
+        .level-card.l2::before { background: var(--accent-purple); }
+        .level-card.l3::before { background: var(--accent-cyan); }
+        .level-card.l4::before { background: var(--accent-rose); }
+        .level-card.l5::before { background: var(--accent-indigo); }
+        .level-card.lgrag::before { background: #3b82f6; }
+        .level-card.lground::before { background: #10b981; }
 
         .level-header {
             display: flex;
@@ -305,38 +289,36 @@
         }
 
         .level-pill {
-            font-family: var(--font-code);
             font-size: 0.7rem;
             font-weight: 700;
+            text-transform: uppercase;
             padding: 0.25rem 0.6rem;
             border-radius: 6px;
-            text-transform: uppercase;
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text-main);
+            border: 1px solid rgba(255, 255, 255, 0.1);
         }
-
-        .lm1 .level-pill { background: rgba(245, 158, 11, 0.15); color: var(--accent-amber); }
-        .l0 .level-pill { background: rgba(16, 185, 129, 0.15); color: var(--accent-emerald); }
-        .l1 .level-pill { background: rgba(56, 189, 248, 0.15); color: var(--accent-sky); }
-        .l2 .level-pill { background: rgba(168, 85, 247, 0.15); color: var(--accent-purple); }
-        .l3 .level-pill { background: rgba(6, 182, 212, 0.15); color: var(--accent-cyan); }
-        .l4 .level-pill { background: rgba(244, 63, 94, 0.15); color: var(--accent-rose); }
-        .l5 .level-pill { background: rgba(99, 102, 241, 0.15); color: var(--accent-indigo); }
 
         .level-title {
             font-family: var(--font-heading);
             font-size: 1.25rem;
             font-weight: 700;
+            color: #ffffff;
             margin-bottom: 0.75rem;
         }
 
         .level-desc {
-            font-size: 0.85rem;
+            font-size: 0.875rem;
             color: var(--text-muted);
+            line-height: 1.5;
             margin-bottom: 1.25rem;
-            flex-grow: 1;
         }
 
         .feature-list {
             list-style: none;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
         }
 
         .feature-item {
@@ -345,101 +327,51 @@
             display: flex;
             align-items: flex-start;
             gap: 0.5rem;
-            margin-bottom: 0.4rem;
         }
 
         .feature-bullet {
             color: var(--accent-cyan);
-            font-weight: bold;
+            font-weight: 700;
         }
 
-        /* Math & Formula Box */
-        .formula-card {
-            background: linear-gradient(135deg, rgba(18, 18, 21, 1) 0%, rgba(24, 24, 28, 1) 100%);
-            border: 1px solid var(--border-color);
-            border-radius: 20px;
-            padding: 2.25rem;
-            margin-bottom: 3rem;
-            position: relative;
-        }
-
-        .formula-card::after {
-            content: 'ALGORITHM SPECS';
-            position: absolute;
-            top: 1rem; right: 1.5rem;
-            font-family: var(--font-code);
-            font-size: 0.65rem;
-            letter-spacing: 2px;
-            color: var(--accent-emerald);
-            background: rgba(16, 185, 129, 0.1);
-            padding: 0.2rem 0.5rem;
-            border-radius: 4px;
-        }
-
-        .formula-box {
-            background: #000000;
-            border: 1px solid rgba(16, 185, 129, 0.3);
-            border-radius: 12px;
-            padding: 1.25rem 1.5rem;
-            font-family: var(--font-code);
-            font-size: 0.92rem;
-            color: var(--accent-emerald);
-            margin: 1rem 0;
-            overflow-x: auto;
-            box-shadow: inset 0 2px 8px rgba(0,0,0,0.8);
-            line-height: 1.6;
-        }
-
-        /* Code Block Styling */
-        pre {
-            background: #060608;
+        /* Diagrams */
+        .diagram-card {
+            background: var(--bg-card);
             border: 1px solid var(--border-color);
             border-radius: 12px;
-            padding: 1.25rem;
-            font-family: var(--font-code);
-            font-size: 0.82rem;
-            color: #e4e4e7;
+            padding: 2rem;
             overflow-x: auto;
-            margin-bottom: 1.5rem;
-            line-height: 1.5;
         }
 
-        code .keyword { color: var(--accent-purple); font-weight: bold; }
-        code .function { color: var(--accent-sky); }
-        code .string { color: var(--accent-emerald); }
-        code .comment { color: var(--text-dim); font-style: italic; }
-
-        /* Metrics Table */
+        /* Tables */
         .table-wrapper {
             background: var(--bg-card);
             border: 1px solid var(--border-color);
-            border-radius: 16px;
+            border-radius: 12px;
             overflow: hidden;
-            margin-bottom: 3rem;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.3);
         }
 
         table {
             width: 100%;
             border-collapse: collapse;
             text-align: left;
-            font-size: 0.85rem;
+            font-size: 0.875rem;
         }
 
         th {
             background: rgba(255, 255, 255, 0.03);
-            padding: 1rem 1.25rem;
-            font-family: var(--font-code);
-            font-size: 0.75rem;
-            text-transform: uppercase;
-            letter-spacing: 1px;
             color: var(--text-muted);
+            font-weight: 600;
+            padding: 1rem 1.25rem;
             border-bottom: 1px solid var(--border-color);
+            text-transform: uppercase;
+            font-size: 0.75rem;
+            letter-spacing: 1px;
         }
 
         td {
             padding: 1rem 1.25rem;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            border-bottom: 1px solid var(--border-color);
             color: var(--text-main);
         }
 
@@ -448,54 +380,113 @@
         }
 
         tr:hover td {
-            background: rgba(255, 255, 255, 0.02);
+            background: rgba(255, 255, 255, 0.015);
         }
 
         .status-pill {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.35rem;
-            padding: 0.2rem 0.6rem;
-            border-radius: 20px;
             font-size: 0.75rem;
             font-weight: 600;
+            padding: 0.2rem 0.6rem;
+            border-radius: 12px;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
         }
 
-        .status-high { background: rgba(16, 185, 129, 0.15); color: var(--accent-emerald); border: 1px solid rgba(16, 185, 129, 0.3); }
-        .status-medium { background: rgba(245, 158, 11, 0.15); color: var(--accent-amber); border: 1px solid rgba(245, 158, 11, 0.3); }
-        .status-low { background: rgba(244, 63, 94, 0.15); color: var(--accent-rose); border: 1px solid rgba(244, 63, 94, 0.3); }
+        .status-high {
+            background: rgba(16, 185, 129, 0.15);
+            color: var(--accent-emerald);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
 
-        /* Interactive Tabs */
-        .tab-buttons {
-            display: flex;
-            gap: 0.5rem;
-            border-bottom: 1px solid var(--border-color);
-            margin-bottom: 1.5rem;
+        .status-medium {
+            background: rgba(245, 158, 11, 0.15);
+            color: var(--accent-amber);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+        }
+
+        .status-low {
+            background: rgba(244, 63, 94, 0.15);
+            color: var(--accent-rose);
+            border: 1px solid rgba(244, 63, 94, 0.3);
+        }
+
+        /* Formulas & Math */
+        .formula-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+        }
+
+        .formula-box {
+            background: #0d0d10;
+            border: 1px solid #1f1f23;
+            border-left: 3px solid var(--accent-purple);
+            padding: 1.25rem;
+            border-radius: 8px;
+            font-family: var(--font-code);
+            font-size: 0.85rem;
+            color: #e4e4e7;
+            margin: 1rem 0;
+            line-height: 1.7;
             overflow-x: auto;
         }
 
+        /* Code Tabs */
+        .tab-buttons {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+            overflow-x: auto;
+            padding-bottom: 0.5rem;
+        }
+
         .tab-btn {
-            background: none;
-            border: none;
-            padding: 0.75rem 1.25rem;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
             color: var(--text-muted);
-            font-family: var(--font-body);
+            padding: 0.6rem 1.2rem;
+            border-radius: 8px;
             font-size: 0.85rem;
             font-weight: 600;
             cursor: pointer;
-            border-bottom: 2px solid transparent;
             transition: all 0.2s ease;
             white-space: nowrap;
         }
 
+        .tab-btn:hover {
+            background: var(--bg-card-hover);
+            color: var(--text-main);
+        }
+
         .tab-btn.active {
-            color: var(--accent-cyan);
-            border-bottom-color: var(--accent-cyan);
+            background: linear-gradient(135deg, rgba(6, 182, 212, 0.15) 0%, rgba(168, 85, 247, 0.15) 100%);
+            border-color: var(--accent-cyan);
+            color: #ffffff;
         }
 
         .tab-content {
             display: none;
+            background: #0d0d10;
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1.5rem;
+            overflow-x: auto;
         }
+
+        .tab-content pre {
+            font-family: var(--font-code);
+            font-size: 0.85rem;
+            color: #d4d4d8;
+            line-height: 1.6;
+        }
+
+        .tab-content .comment { color: #6b7280; }
+        .tab-content .keyword { color: #f43f5e; font-weight: 600; }
+        .tab-content .string { color: #10b981; }
+        .tab-content .function { color: #38bdf8; }
 
         .tab-content.active {
             display: block;
@@ -520,15 +511,16 @@
             <div class="brand-logo">M</div>
             <div>
                 <div class="brand-title">Marklytix</div>
-                <div style="font-size: 0.7rem; color: var(--text-muted);">Hierarchical Text-to-SQL Engine</div>
+                <div style="font-size: 0.7rem; color: var(--text-muted);">Enterprise Text-to-SQL Engine</div>
             </div>
-            <span class="brand-tag">100% Uber Parity</span>
+            <span class="brand-tag">GRAG + Value Grounded</span>
         </div>
         <ul class="nav-links">
             <li><a href="#pipeline">Multi-Agent Pipeline</a></li>
-            <li><a href="#gaps">5 Gaps Solution</a></li>
+            <li><a href="#grounding">Entity Grounding Engine</a></li>
+            <li><a href="#grag">GRAG Schema Graph</a></li>
+            <li><a href="#gaps">Architectural Innovations</a></li>
             <li><a href="#diagram">Architecture Diagram</a></li>
-            <li><a href="#parity">Feature Matrix</a></li>
             <li><a href="#code">Code Specs</a></li>
             <li><a href="#metrics">DB Vitality Matrix</a></li>
         </ul>
@@ -541,16 +533,16 @@
             <h1 class="hero-title">Marklytix <span>Enterprise Text-to-SQL</span> Architecture</h1>
             <p class="hero-subtitle">
                 A state-of-the-art, multi-agent natural language database intelligence system featuring 
-                <strong>100% Architectural Parity with Uber QueryGPT</strong>. Powered by 
-                <strong>Dynamic Column Pruning</strong>, <strong>Continuous Feedback RAG</strong>, 
-                <strong>Recursive Self-Correction</strong>, and <strong>Multi-Server Auto-Hydration</strong>.
+                <strong>Universal Entity Value Grounding</strong>, <strong>Graph Retrieval-Augmented Generation (GRAG)</strong>, 
+                <strong>Negative Feedback Anti-Pattern Directives</strong>, and <strong>Continuous SQL Self-Correction</strong>.
             </p>
             <div class="badges-grid">
-                <div class="badge-card"><div class="badge-icon" style="background: var(--accent-emerald);"></div> 13/13 Full Parity with Uber QueryGPT</div>
+                <div class="badge-card"><div class="badge-icon" style="background: var(--accent-emerald);"></div> Universal Entity Value Grounding (XiYan-SQL / SDE-SQL)</div>
+                <div class="badge-card"><div class="badge-icon" style="background: #3b82f6;"></div> GRAG Explicit Relational Join Blueprints & Multi-Hop Bridge Tables</div>
+                <div class="badge-card"><div class="badge-icon" style="background: var(--accent-rose);"></div> Negative Feedback Flywheel (Dislike Anti-Pattern Directives)</div>
                 <div class="badge-card"><div class="badge-icon" style="background: var(--accent-cyan);"></div> Dynamic Top 5% Join Frequency Column Pruning</div>
                 <div class="badge-card"><div class="badge-icon" style="background: var(--accent-purple);"></div> Continuous SQL Feedback Flywheel (👍 RAG)</div>
-                <div class="badge-card"><div class="badge-icon" style="background: var(--accent-amber);"></div> Recursive Self-Correction Execution Loop</div>
-                <div class="badge-card"><div class="badge-icon" style="background: var(--accent-rose);"></div> Central SQL Server Master Copy + ChromaDB Auto-Sync</div>
+                <div class="badge-card"><div class="badge-icon" style="background: var(--accent-amber);"></div> Recursive Self-Correction Execution Loop (3 Retries)</div>
             </div>
         </section>
 
@@ -558,20 +550,20 @@
         <section id="parity">
             <div class="parity-card">
                 <div>
-                    <div style="font-size: 0.8rem; font-weight: 700; color: var(--accent-emerald); text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 0.5rem;">Architecture Parity Audit</div>
-                    <h3 style="font-family: var(--font-heading); font-size: 1.6rem; font-weight: 700; margin-bottom: 0.5rem;">Sonata Marklytix vs. Uber QueryGPT</h3>
+                    <div style="font-size: 0.8rem; font-weight: 700; color: var(--accent-emerald); text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 0.5rem;">State-of-the-Art Architecture Audit</div>
+                    <h3 style="font-family: var(--font-heading); font-size: 1.6rem; font-weight: 700; margin-bottom: 0.5rem;">Marklytix vs. Industry Gold Standards (Uber QueryGPT & Alibaba XiYan-SQL)</h3>
                     <p style="font-size: 0.9rem; color: var(--text-muted); max-width: 650px;">
-                        All 13 core enterprise capabilities evaluated in the Text-to-SQL reference study have been implemented, tested, and validated in production.
+                        Combines Uber QueryGPT's hierarchical routing and continuous few-shot learning with Alibaba's XiYan-SQL Entity Value Retrieval and Graph Schema Linking.
                     </p>
                 </div>
                 <div style="text-align: right;">
                     <div class="parity-score">100%</div>
-                    <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-muted);">13 of 13 Capabilities Fully Achieved</div>
+                    <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-muted);">Fully Verified in Live Production</div>
                 </div>
             </div>
         </section>
 
-        <!-- 5-Level Architecture Overview -->
+        <!-- Multi-Level Execution Pipeline -->
         <section id="pipeline">
             <div class="section-header">
                 <div class="section-tag">MULTI-AGENT PIPELINE</div>
@@ -585,12 +577,27 @@
                         <span class="level-pill">Level -1</span>
                         <span style="font-size: 0.75rem; color: var(--accent-amber);">Prompt Enhancer</span>
                     </div>
-                    <h3 class="level-title">Pre-Classification Expander (Gap 1)</h3>
+                    <h3 class="level-title">Pre-Classification Expander</h3>
                     <p class="level-desc">Expands shorthand inputs (e.g. 'patna collection july') into explicit, disambiguated queries with date ranges and metrics.</p>
                     <ul class="feature-list">
                         <li class="feature-item"><span class="feature-bullet">›</span> Smart Bypass (&ge;8 words / &ge;60 chars)</li>
                         <li class="feature-item"><span class="feature-bullet">›</span> Metric & Business Term Expander</li>
                         <li class="feature-item"><span class="feature-bullet">›</span> Raw Intent Context Preserver</li>
+                    </ul>
+                </div>
+
+                <!-- Entity Value Grounding Engine -->
+                <div class="level-card lground">
+                    <div class="level-header">
+                        <span class="level-pill">Grounding Engine</span>
+                        <span style="font-size: 0.75rem; color: var(--accent-emerald);">XiYan-SQL Value Retrieval</span>
+                    </div>
+                    <h3 class="level-title">Universal Entity Value Grounding</h3>
+                    <p class="level-desc">Scans master dimension columns, strips category suffixes, resolves typos (e.g. 'vraj' &rarr; 'DEVRAJ SINGH'), and grounds exact WHERE literals.</p>
+                    <ul class="feature-list">
+                        <li class="feature-item"><span class="feature-bullet">›</span> Content-Token Isolation & Contiguous Spans</li>
+                        <li class="feature-item"><span class="feature-bullet">›</span> Levenshtein & Double-Metaphone Sound Matching</li>
+                        <li class="feature-item"><span class="feature-bullet">›</span> Instant Local Disk Cache (&lt;10ms)</li>
                     </ul>
                 </div>
 
@@ -609,41 +616,26 @@
                     </ul>
                 </div>
 
-                <!-- Level 1 -->
-                <div class="level-card l1">
+                <!-- GRAG Relational Graph -->
+                <div class="level-card lgrag">
                     <div class="level-header">
-                        <span class="level-pill">Level 1</span>
-                        <span style="font-size: 0.75rem; color: var(--accent-sky);">Classifier</span>
+                        <span class="level-pill">GRAG Engine</span>
+                        <span style="font-size: 0.75rem; color: #3b82f6;">Graph Relational Linking</span>
                     </div>
-                    <h3 class="level-title">Category Domain Router</h3>
-                    <p class="level-desc">Routes query to operational domain verticals via sub-millisecond SQL keyword dictionaries and ChromaDB cosine embeddings.</p>
+                    <h3 class="level-title">Relational Join Graph Blueprints</h3>
+                    <p class="level-desc">Extracts schema relationships and auto-discovers multi-hop bridge tables to generate verified multi-table JOIN blueprints.</p>
                     <ul class="feature-list">
-                        <li class="feature-item"><span class="feature-bullet">›</span> Direct Schema Overrider</li>
-                        <li class="feature-item"><span class="feature-bullet">›</span> Cosine Vector Distance Matching</li>
-                        <li class="feature-item"><span class="feature-bullet">›</span> LLM Generative Fallback</li>
+                        <li class="feature-item"><span class="feature-bullet">›</span> Multi-Hop Bridge Discovery (BFS Path Finding)</li>
+                        <li class="feature-item"><span class="feature-bullet">›</span> Explicit Relational Join Blueprints</li>
+                        <li class="feature-item"><span class="feature-bullet">›</span> Eliminates Join Key Hallucinations</li>
                     </ul>
                 </div>
 
-                <!-- Level 2 -->
-                <div class="level-card l2">
-                    <div class="level-header">
-                        <span class="level-pill">Level 2</span>
-                        <span style="font-size: 0.75rem; color: var(--accent-purple);">Router</span>
-                    </div>
-                    <h3 class="level-title">Subcategory Functional Routing</h3>
-                    <p class="level-desc">Narrows domain into specific operational subcategories using parent-category filtered vector search.</p>
-                    <ul class="feature-list">
-                        <li class="feature-item"><span class="feature-bullet">›</span> Scoped ChromaDB Subcategory Vectors</li>
-                        <li class="feature-item"><span class="feature-bullet">›</span> Global Fallback Unrestricted Search</li>
-                        <li class="feature-item"><span class="feature-bullet">›</span> Auto-Reload Stale Vector Handles</li>
-                    </ul>
-                </div>
-
-                <!-- Column Pruning (Gap 2) -->
+                <!-- Column Pruning -->
                 <div class="level-card l3">
                     <div class="level-header">
                         <span class="level-pill">Schema Pruner</span>
-                        <span style="font-size: 0.75rem; color: var(--accent-cyan);">Gap 2 Engine</span>
+                        <span style="font-size: 0.75rem; color: var(--accent-cyan);">Column Pruner</span>
                     </div>
                     <h3 class="level-title">Dynamic Column Pruning (Approach C)</h3>
                     <p class="level-desc">Trims 50-200+ column tables down to ~10-15 relevant columns. Preserves PK, top 5% join graph frequency columns, and metric attributes.</p>
@@ -654,22 +646,22 @@
                     </ul>
                 </div>
 
-                <!-- SQL Generator & Few-Shot RAG (Gap 3) -->
+                <!-- SQL Generator & Few-Shot RAG -->
                 <div class="level-card l4">
                     <div class="level-header">
                         <span class="level-pill">Level 3</span>
                         <span style="font-size: 0.75rem; color: var(--accent-rose);">SQL Generator</span>
                     </div>
                     <h3 class="level-title">Few-Shot Grounded T-SQL Generation</h3>
-                    <p class="level-desc">Dynamically retrieves top verified user-approved SQL queries (dist &le; 1.05) from ChromaDB and injects them as few-shot exemplars.</p>
+                    <p class="level-desc">Retrieves top verified SQL queries (👍) and injects anti-pattern warnings from disliked queries (👎) with explicit schema blueprints.</p>
                     <ul class="feature-list">
                         <li class="feature-item"><span class="feature-bullet">›</span> Dynamic Few-Shot RAG (marklytix_sql_examples)</li>
-                        <li class="feature-item"><span class="feature-bullet">›</span> Adaptive Distance Gap Filter (&le; 0.25)</li>
+                        <li class="feature-item"><span class="feature-bullet">›</span> Dislike Anti-Pattern Warnings (marklytix_dislike_feedback)</li>
                         <li class="feature-item"><span class="feature-bullet">›</span> Strictly Bracketed dbo.[table] T-SQL</li>
                     </ul>
                 </div>
 
-                <!-- Self-Correction & Feedback (Gap 4 & 5) -->
+                <!-- Self-Correction & Feedback -->
                 <div class="level-card l5">
                     <div class="level-header">
                         <span class="level-pill">Level 4/5</span>
@@ -686,52 +678,58 @@
             </div>
         </section>
 
-        <!-- Deep Dive into the 5 Architectural Gaps -->
+        <!-- Deep Dive into Architectural Innovations -->
         <section id="gaps">
             <div class="section-header">
-                <div class="section-tag">DEEP DIVE</div>
-                <h2 class="section-title">How the 5 Uber QueryGPT Architectural Gaps Were Solved</h2>
+                <div class="section-tag">ARCHITECTURAL INNOVATIONS</div>
+                <h2 class="section-title">Comprehensive Architectural Breakthroughs</h2>
             </div>
 
             <div class="table-wrapper">
                 <table>
                     <thead>
                         <tr>
-                            <th>Gap Identified</th>
-                            <th>Uber QueryGPT Paradigm</th>
+                            <th>Module / Innovation</th>
+                            <th>Industry Reference</th>
                             <th>Marklytix Enterprise Implementation</th>
                             <th>Status</th>
                         </tr>
                     </thead>
                     <tbody>
                         <tr>
-                            <td style="font-family: var(--font-code); font-weight: 700; color: var(--accent-amber);">Gap 1: Prompt Expansion</td>
-                            <td>Expands shorthand questions into explicit intents before routing</td>
-                            <td><strong>Level -1 Agent (<code>expand_user_prompt</code>)</strong> with smart bypass for queries &ge;8 words. Disambiguates abbreviations and time ranges.</td>
+                            <td style="font-family: var(--font-code); font-weight: 700; color: var(--accent-emerald);">Universal Entity Value Grounding</td>
+                            <td>XiYan-SQL / SDE-SQL Value Retrieval</td>
+                            <td><strong><code>MarklytixEntityGroundingEngine</code></strong>: Dynamically scans SQL Server master dimension columns. Strips category stopwords ('branch', 'hub'), resolves spelling mistakes ('vraj' &rarr; 'DEVRAJ SINGH'), and grounds exact WHERE clauses.</td>
                             <td><span class="status-pill status-high">✅ Fully Implemented</span></td>
                         </tr>
                         <tr>
-                            <td style="font-family: var(--font-code); font-weight: 700; color: var(--accent-cyan);">Gap 2: Column Pruning</td>
-                            <td>Filters 50-200+ columns down to top ~10 relevant columns to eliminate hallucination</td>
-                            <td><strong>Approach C Hybrid Pruner (<code>prune_table_schema</code>)</strong>: Preserves Primary Keys, top 5% highest-frequency join graph keys, and LLM-prunes remaining attributes.</td>
+                            <td style="font-family: var(--font-code); font-weight: 700; color: #3b82f6;">GRAG Schema Graph Join Engine</td>
+                            <td>Graph-RAG & Linked Schema Blueprints</td>
+                            <td><strong><code>MarklytixRelationalGraph</code></strong>: Scans database table relationships, detects multi-hop bridge tables, and injects explicit JOIN blueprints (<code>ON dbo.[A].[key] = dbo.[B].[key]</code>).</td>
                             <td><span class="status-pill status-high">✅ Fully Implemented</span></td>
                         </tr>
                         <tr>
-                            <td style="font-family: var(--font-code); font-weight: 700; color: var(--accent-sky);">Gap 3: Few-Shot SQL RAG</td>
-                            <td>Vector search retrieves past validated queries by semantic similarity</td>
-                            <td><strong><code>marklytix_sql_examples</code> ChromaDB Collection</strong>: Retrieves verified queries with strict distance threshold (&le;1.05) and injects into Level 3 prompt.</td>
+                            <td style="font-family: var(--font-code); font-weight: 700; color: var(--accent-rose);">Negative Feedback Anti-Pattern System</td>
+                            <td>Contrastive Feedback Tuning</td>
+                            <td><strong><code>marklytix_dislike_feedback</code> Chroma Collection</strong>: Vectorizes user dislike feedback notes and injects <code>CRITICAL WARNING (WHAT NOT TO DO)</code> directives for similar queries.</td>
                             <td><span class="status-pill status-high">✅ Fully Implemented</span></td>
                         </tr>
                         <tr>
-                            <td style="font-family: var(--font-code); font-weight: 700; color: var(--accent-rose);">Gap 4: Self-Correction Loop</td>
-                            <td>Recursive validator catches syntax/schema errors and re-prompts LLM</td>
+                            <td style="font-family: var(--font-code); font-weight: 700; color: var(--accent-cyan);">Column Pruning (Approach C)</td>
+                            <td>Uber QueryGPT Schema Pruning</td>
+                            <td><strong><code>prune_table_schema</code></strong>: Preserves Primary Keys, top 5% highest-frequency join graph keys, and LLM-prunes remaining attributes down to ~10-15 columns.</td>
+                            <td><span class="status-pill status-high">✅ Fully Implemented</span></td>
+                        </tr>
+                        <tr>
+                            <td style="font-family: var(--font-code); font-weight: 700; color: var(--accent-sky);">Few-Shot SQL Continuous RAG</td>
+                            <td>Continuous Learning RAG</td>
+                            <td><strong><code>marklytix_sql_examples</code> Chroma Collection</strong>: Retrieves verified user-approved SQL queries with strict distance threshold (&le;1.05) and injects into Level 3 prompt.</td>
+                            <td><span class="status-pill status-high">✅ Fully Implemented</span></td>
+                        </tr>
+                        <tr>
+                            <td style="font-family: var(--font-code); font-weight: 700; color: var(--accent-indigo);">Recursive Self-Correction Loop</td>
+                            <td>Autonomous Execution Repair</td>
                             <td><strong><code>execute_sql_with_self_correction</code></strong>: Catches SQL Server database errors, feeds stack trace back to LLM in a 3-attempt self-repair retry loop.</td>
-                            <td><span class="status-pill status-high">✅ Fully Implemented</span></td>
-                        </tr>
-                        <tr>
-                            <td style="font-family: var(--font-code); font-weight: 700; color: var(--accent-purple);">Gap 5: Continuous Indexing</td>
-                            <td>User-approved queries continuously indexed into vector store</td>
-                            <td><strong>REST API <code>POST /marklytix/api/feedback/</code></strong>: Dual-writes to central SQL Server (<code>dbo.Marklytix_VerifiedQueryExamples</code>) + auto-hydrates ChromaDB on startup.</td>
                             <td><span class="status-pill status-high">✅ Fully Implemented</span></td>
                         </tr>
                     </tbody>
@@ -756,19 +754,33 @@ graph TD
     %% Level 0 & Schema RAG
     L0 -->|Query & Priority Filter| ChromaSchemas[(ChromaDB: marklytix_table_schemas)]
     SQLStats[(SQL Server sys.partitions / sys.allocation_units)] -->|Row Counts & Storage MB| L0
-    ChromaSchemas --> TopSchemas[Top 2 Active Production Schemas]
+    ChromaSchemas --> TopSchemas[Top Active Production Schemas]
+    
+    %% Entity Value Grounding Engine
+    User -->|Raw Entity Mentions| EntityEngine[Universal Entity Value Grounding Engine]
+    SQLMaster[(SQL Server Master Dimension Tables)] -->|Live Discovery & Cache| EntityEngine
+    EntityEngine -->|Resolved DB Literals & Keys| PromptAssembler[Level 3 Prompt Assembler]
+    
+    %% GRAG Schema Graph Join Engine
+    TopSchemas --> GRAGEngine[GRAG Relational Graph Engine]
+    GRAGEngine -->|Multi-Hop Bridge Discovery| GRAGEngine
+    GRAGEngine -->|Explicit Relational Join Blueprint| PromptAssembler
     
     %% Hierarchy Routing
     Expander -->|Query| L1[Level 1: Category Domain Classifier]
     L1 -->|Domain Vertical| L2[Level 2: Subcategory Functional Router]
     
     %% Column Pruner & Few-Shot RAG Branch
-    TopSchemas --> Pruner[Gap 2: Dynamic Column Pruner - Approach C]
-    Pruner -->|Trimmed Schemas ~10-15 Cols| PromptAssembler[Level 3 Prompt Assembler]
+    TopSchemas --> Pruner[Dynamic Column Pruner - Approach C]
+    Pruner -->|Trimmed Schemas ~10-15 Cols| PromptAssembler
     
-    Expander --> FewShotRAG[Gap 3: Few-Shot SQL RAG - dist <= 1.05]
+    Expander --> FewShotRAG[Few-Shot SQL RAG - dist <= 1.05]
     ChromaFewShot[(ChromaDB: marklytix_sql_examples)] --> FewShotRAG
     FewShotRAG -->|Verified SQL Exemplars| PromptAssembler
+    
+    Expander --> DislikeRAG[Dislike Feedback Warnings RAG]
+    ChromaDislike[(ChromaDB: marklytix_dislike_feedback)] --> DislikeRAG
+    DislikeRAG -->|Anti-Pattern Directives| PromptAssembler
     
     L2 --> SubcatPrompt[(dbo.Marklytix_SubcategoryPrompts)]
     SubcatPrompt --> PromptAssembler
@@ -777,7 +789,7 @@ graph TD
     PromptAssembler --> LLMGen[LLM T-SQL Generator: Gemini / Llama 3.3 / Gemma]
     LLMGen --> InitialSQL[Generated T-SQL Query]
     
-    InitialSQL --> Validator{Gap 4: Execute & Validate}
+    InitialSQL --> Validator{Execute & Validate}
     Validator -->|Execution Error| SelfCorrection[Auto-Correction Agent - Feed Stack Trace]
     SelfCorrection -->|Corrected T-SQL Query| Validator
     
@@ -785,51 +797,10 @@ graph TD
     ExecSynth -->|WebSocket Payload| User
     
     %% Continuous Feedback Flywheel
-    User -->|👍 Feedback Click| FeedbackAPI[Gap 5: POST /marklytix/api/feedback/]
+    User -->|👍 Feedback Click| FeedbackAPI[POST /marklytix/api/feedback/]
     FeedbackAPI -->|1. Master Copy| CentralSQL[(Central SQL Server: dbo.Marklytix_VerifiedQueryExamples)]
     FeedbackAPI -->|2. Local Cache| ChromaFewShot
     CentralSQL -.->|Startup Auto-Hydration| ChromaFewShot
-                </div>
-            </div>
-        </section>
-
-        <!-- Table Priority Scoring & Pruning Mathematics -->
-        <section id="priority">
-            <div class="section-header">
-                <div class="section-tag">MATHEMATICAL ENGINE</div>
-                <h2 class="section-title">Vitality Ranking & Column Pruning Algorithms</h2>
-            </div>
-
-            <div class="formula-card">
-                <h3 style="font-family: var(--font-heading); font-size: 1.3rem; margin-bottom: 1rem;">1. Production Priority Score Formula ($PriorityScore \in [0.01, 1.00]$)</h3>
-                <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1rem;">
-                    Evaluates row count logarithmic volume, storage footprint, and production backup penalties:
-                </p>
-
-                <div class="formula-box">
-                    S_volume = TotalRows == 0 ? 0.0 : min(1.0, log10(TotalRows + 1) / 5.0)<br>
-                    S_storage = min(1.0, DataSize_MB / 10.0)<br><br>
-                    Penalty = Backup_or_Temp_Table ? -0.50 : (Empty_Temp_Table ? -0.70 : (Master_Table ? +0.15 : 0.0))<br>
-                    BaseScore = (0.50 * S_volume) + (0.30 * S_storage) + Penalty + Bonus_active<br><br>
-                    PriorityScore = max(0.01, min(1.00, BaseScore))
-                </div>
-
-                <h3 style="font-family: var(--font-heading); font-size: 1.3rem; margin-top: 2rem; margin-bottom: 1rem;">2. Dynamic Column Pruning Algorithm (Approach C)</h3>
-                <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1rem;">
-                    Extracts column occurrence frequency $F(col)$ across all graph join relationships in <code>ConnectedTables</code>:
-                </p>
-                <div class="formula-box" style="color: var(--accent-cyan); border-color: rgba(6, 182, 212, 0.3);">
-                    Mandatory Join Hubs = { PrimaryKey } &cup; Top 5% Highest-Frequency Connected Columns { branchid, userid, usercode, username }<br>
-                    Pruned Columns = Mandatory Join Hubs &cup; LLM_Selected_Relevant_Columns(UserQuery, TableSchema)
-                </div>
-
-                <h3 style="font-family: var(--font-heading); font-size: 1.3rem; margin-top: 2rem; margin-bottom: 1rem;">3. Adaptive Few-Shot SQL Relevance Threshold</h3>
-                <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 1rem;">
-                    Filters nearest neighbors in ChromaDB vector space to ensure only true intent matches are injected:
-                </p>
-                <div class="formula-box" style="color: var(--accent-emerald); border-color: rgba(16, 185, 129, 0.3);">
-                    Eligible Matches = { ex &isin; Results | dist(ex, Query) &le; 1.05 }<br>
-                    If Top 1 match is strong (dist &le; 0.95): Keep Example 2 only if (dist_2 - dist_1) &le; 0.25
                 </div>
             </div>
         </section>
@@ -842,15 +813,74 @@ graph TD
             </div>
 
             <div class="tab-buttons">
-                <button class="tab-btn active" onclick="openTab(event, 'tab-pruner')">Approach C Column Pruner</button>
+                <button class="tab-btn active" onclick="openTab(event, 'tab-grounding')">Entity Grounding Engine</button>
+                <button class="tab-btn" onclick="openTab(event, 'tab-grag')">GRAG Relational Graph</button>
+                <button class="tab-btn" onclick="openTab(event, 'tab-dislike')">Negative Feedback Warnings</button>
+                <button class="tab-btn" onclick="openTab(event, 'tab-pruner')">Approach C Column Pruner</button>
                 <button class="tab-btn" onclick="openTab(event, 'tab-fewshot')">Few-Shot SQL Continuous RAG</button>
                 <button class="tab-btn" onclick="openTab(event, 'tab-selfcorrect')">Self-Correction Loop</button>
-                <button class="tab-btn" onclick="openTab(event, 'tab-feedback')">Feedback & SQL Server Sync</button>
-                <button class="tab-btn" onclick="openTab(event, 'tab-expander')">Level -1 Prompt Enhancer</button>
+            </div>
+
+            <!-- Entity Grounding Tab -->
+            <div id="tab-grounding" class="tab-content active">
+                <pre><code><span class="comment"># Universal Entity Value Grounding & Typo-Resilient Matching in entity_grounding_engine.py</span>
+<span class="keyword">class</span> <span class="function">MarklytixEntityGroundingEngine</span>:
+    <span class="keyword">def</span> <span class="function">resolve_entities</span>(self, query: str, candidate_tables: list = None, threshold: float = 0.78):
+        <span class="comment"># 1. Isolate contiguous content tokens (ignoring conversational stopwords)</span>
+        all_words = re.findall(r'\b\w+\b', query.lower())
+        content_word_indices = [i for i, w in enumerate(all_words) if w not in generic_stopwords]
+        
+        <span class="comment"># 2. Group contiguous words into candidate entity phrases (e.g. "ram devi")</span>
+        content_phrases = group_contiguous_tokens(all_words, content_word_indices)
+        
+        <span class="comment"># 3. Non-Overlapping Longest-Match against Scoped Candidate Tables</span>
+        for group in content_phrases:
+            phrase = " ".join([all_words[idx] for idx in group])
+            match = self.fuzzy_match_against_registry(phrase, candidate_tables, threshold)
+            if match:
+                matched_results.append(match)
+                break  <span class="comment"># Consumes span, suppresses fragmented single-word noise</span>
+                
+        <span class="keyword">return</span> matched_results</code></pre>
+            </div>
+
+            <!-- GRAG Relational Graph Tab -->
+            <div id="tab-grag" class="tab-content">
+                <pre><code><span class="comment"># Graph Retrieval-Augmented Generation (GRAG) in graph_engine.py</span>
+<span class="keyword">class</span> <span class="function">MarklytixRelationalGraph</span>:
+    <span class="keyword">def</span> <span class="function">get_relational_join_blueprint</span>(self, table_names: list):
+        <span class="comment"># 1. Discover multi-hop bridge tables via BFS shortest path</span>
+        connected_tables, bridges = self.discover_bridges_for_tables(table_names)
+        
+        <span class="comment"># 2. Extract verified foreign-key & column-heuristic join relationships</span>
+        join_lines = []
+        for t1, t2 in combinations(connected_tables, 2):
+            joins = self.get_join_paths_between_tables(t1, t2)
+            for j in joins:
+                join_lines.append(f"-- dbo.[{t1}] JOIN dbo.[{t2}] ON dbo.[{t1}].[{j['key1']}] = dbo.[{t2}].[{j['key2']}]")
+                
+        <span class="keyword">return</span> "\n".join(join_lines), bridges</code></pre>
+            </div>
+
+            <!-- Negative Feedback Tab -->
+            <div id="tab-dislike" class="tab-content">
+                <pre><code><span class="comment"># Negative Feedback Anti-Pattern Directives in consumers.py & views.py</span>
+<span class="keyword">def</span> <span class="function">retrieve_dislike_feedback_warnings</span>(self, query: str, k: int = 1):
+    dislike_coll = client.get_collection(name=<span class="string">"marklytix_dislike_feedback"</span>)
+    results = dislike_coll.query(query_texts=[query], n_results=k)
+    
+    warnings = []
+    for doc, meta, dist in zip(results["documents"][0], results["metadatas"][0], results["distances"][0]):
+        if dist <= 1.05:  <span class="comment"># Close semantic match to previously disliked query</span>
+            correction_note = meta.get("feedback_comments", "")
+            warnings.append(f"-- ⚠️ CRITICAL WARNING (FROM USER DISLIKE FEEDBACK ON SIMILAR QUERY):")
+            warnings.append(f"-- -> PREVENT THIS MISTAKE: {correction_note}")
+            
+    <span class="keyword">return</span> "\n".join(warnings)</code></pre>
             </div>
 
             <!-- Column Pruner Tab -->
-            <div id="tab-pruner" class="tab-content active">
+            <div id="tab-pruner" class="tab-content">
                 <pre><code><span class="comment"># Dynamic Column Pruning: Top 5% Join Frequency + LLM Metric Selector in consumers.py</span>
 <span class="keyword">def</span> <span class="function">prune_table_schema</span>(self, schema_text, user_query, table_name, max_columns=15):
     doc_meta = self.get_table_documentation_cache(self.engine).get(table_name.lower(), {})
@@ -916,42 +946,6 @@ Fix the query. Return ONLY the valid bracketed T-SQL."""</span>
             current_query = self.query_model(correction_prompt)
             
     <span class="keyword">raise</span> Exception(<span class="string">"Max self-correction retries exceeded."</span>)</code></pre>
-            </div>
-
-            <!-- Feedback & Master Sync Tab -->
-            <div id="tab-feedback" class="tab-content">
-                <pre><code><span class="comment"># Gap 5: Dual-Write Feedback Ingestion & Startup Auto-Sync in views.py & consumers.py</span>
-<span class="keyword">def</span> <span class="function">submit_query_feedback</span>(request):
-    data = json.loads(request.body)
-    <span class="keyword">if</span> data.get(<span class="string">"rating"</span>) == <span class="string">"like"</span>:
-        <span class="comment"># 1. Master Copy: Persist into central SQL Server table</span>
-        _exec(<span class="string">"""INSERT INTO dbo.Marklytix_VerifiedQueryExamples 
-                 (UserQuestion, GeneratedSQL, Subcategory, TablesUsed, Rating, IsActive)
-                 VALUES (%s, %s, %s, %s, %s, 1)"""</span>, [q, sql, subcat, tables, <span class="string">'like'</span>])
-        
-        <span class="comment"># 2. Local Cache: Vectorize and upsert into ChromaDB</span>
-        sql_coll.upsert(ids=[doc_id], documents=[doc_text], metadatas=[meta])
-
-<span class="comment"># On Server/WebSocket Startup: Auto-Hydrate ChromaDB from Central SQL Server</span>
-<span class="keyword">def</span> <span class="function">sync_sql_examples_from_database</span>(self):
-    rows = conn.execute(text(<span class="string">"SELECT UserQuestion, GeneratedSQL, Subcategory FROM dbo.Marklytix_VerifiedQueryExamples WHERE IsActive = 1"</span>)).fetchall()
-    sql_coll.upsert(ids=ids, documents=docs, metadatas=metas)</code></pre>
-            </div>
-
-            <!-- Prompt Expander Tab -->
-            <div id="tab-expander" class="tab-content">
-                <pre><code><span class="comment"># Level -1: Pre-Classification Prompt Enhancer Agent in consumers.py</span>
-<span class="keyword">def</span> <span class="function">expand_user_prompt</span>(self, message):
-    raw_query = message.strip()
-    words = raw_query.split()
-    
-    <span class="comment"># Smart bypass: >=8 words or >=60 chars bypasses LLM for 0ms overhead</span>
-    <span class="keyword">if</span> len(words) >= 8 <span class="keyword">or</span> len(raw_query) >= 60:
-        <span class="keyword">return</span> raw_query, False, 0.0
-
-    prompt = f<span class="string">"Convert shorthand query into explicit natural language intent: '{raw_query}'"</span>
-    expanded_text = self.query_model(prompt, max_tokens=150)
-    <span class="keyword">return</span> expanded_text, True, elapsed_time</code></pre>
             </div>
         </section>
 

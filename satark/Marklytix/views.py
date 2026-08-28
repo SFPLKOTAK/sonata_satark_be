@@ -670,7 +670,7 @@ def submit_query_feedback(request):
                         VALUES (%s, %s, %s, %s, %s, %s, %s, 0, 1, -2, 'Flagged_Poison', 0)
                     """, [question, generated_query, category, subcategory, tables_used, rating, feedback_text], fetch="none")
 
-                # If TrustScore <= 0, automatically evict/purge from ChromaDB vector store
+                # If TrustScore <= 0, automatically evict/purge from ChromaDB few-shot SQL store
                 if trust_score <= 0 and os.path.exists(storage_dir):
                     import chromadb
                     client = chromadb.PersistentClient(path=storage_dir)
@@ -678,9 +678,34 @@ def submit_query_feedback(request):
                         sql_coll = client.get_collection(name="marklytix_sql_examples")
                         sql_coll.delete(where={"question": question})
                         evicted = True
-                        print(f"[POISON EVICTION] Successfully evicted/purged poisoned query '{question}' from ChromaDB!")
+                        print(f"[POISON EVICTION] Successfully evicted/purged poisoned query '{question}' from few-shot ChromaDB!")
                     except Exception as del_err:
                         print(f"[POISON EVICTION NOTICE]: {del_err}")
+
+                # Store user dislike correction note in marklytix_dislike_feedback for warning injection
+                if feedback_text and os.path.exists(storage_dir):
+                    import chromadb
+                    client = chromadb.PersistentClient(path=storage_dir)
+                    try:
+                        dislike_coll = client.get_or_create_collection(
+                            name="marklytix_dislike_feedback",
+                            metadata={"description": "Negative Feedback and Correction Notes for LLM Anti-Pattern Warnings"}
+                        )
+                        d_id = f"dislike_{hashlib.md5(question.encode('utf-8')).hexdigest()[:12]}"
+                        dislike_coll.upsert(
+                            ids=[d_id],
+                            documents=[f"User Question: {question}\nDislike Correction Note: {feedback_text}"],
+                            metadatas=[{
+                                "question": question,
+                                "feedback_comments": feedback_text,
+                                "category": category or "",
+                                "subcategory": subcategory.lower() if subcategory else "",
+                                "timestamp": datetime.now().isoformat()
+                            }]
+                        )
+                        print(f"[DISLIKE FEEDBACK FLYWHEEL] Stored dislike warning note for '{question}': '{feedback_text}'")
+                    except Exception as dis_err:
+                        print(f"[DISLIKE FEEDBACK INDEX ERROR]: {dis_err}")
 
             except Exception as dbe3:
                 print(f"[CENTRAL DB DISLIKE ERROR]: {dbe3}")
