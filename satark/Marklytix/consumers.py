@@ -600,17 +600,18 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
                 finally:
                     raw_conn.close()
 
-    def execute_sql_with_self_correction(self, initial_sql, user_query, schemas_context="", max_retries=2):
+    def execute_sql_with_self_correction(self, initial_sql, user_query, schemas_context="", full_prompt="", max_retries=5):
         """
         Gap 4 — Recursive SQL Validation & Self-Correction Agent
         Executes initial_sql against SQL Server. On T-SQL error (e.g. invalid column name,
-        invalid object, ambiguous join key, syntax error), captures error traceback from database engine,
-        constructs self-correction prompt with valid schema DDL, and queries LLM to self-correct SQL.
-        Loops up to max_retries (default 2 retries = 3 total attempts).
+        invalid object, ambiguous join key, syntax error) OR 0-row empty result, captures
+        error traceback/notice, reconstructs self-correction prompt using the complete original prompt,
+        and queries LLM to self-correct SQL up to max_retries (5 retries = 6 total attempts).
         """
         current_sql = initial_sql
         last_error = None
         attempt_history = []
+        last_empty_results = None
 
         for attempt in range(1, max_retries + 2):
             try:
@@ -619,17 +620,28 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
                 
                 db_results = self.execute_sql_single_attempt(current_sql)
                 
+                # Validation: 0-Row Result Detection
+                if db_results is not None and len(db_results) == 0 and attempt <= max_retries:
+                    last_empty_results = db_results
+                    raise ValueError(
+                        "SQL executed without syntax errors, BUT returned 0 ROWS. "
+                        "Please check WHERE clause filters, string literal values (e.g. case-sensitivity), "
+                        "and JOIN predicate keys to ensure the query returns valid non-empty rows."
+                    )
+
                 if attempt > 1:
-                    print(f"🎉 [SQL SELF-CORRECTION AGENT] Fixed SQL query executed successfully on Attempt {attempt}!")
+                    row_cnt = len(db_results) if db_results is not None else 0
+                    print(f"🎉 [SQL SELF-CORRECTION AGENT] Fixed SQL query executed successfully on Attempt {attempt}! Returned {row_cnt} rows.")
                     try:
                         self.send(json.dumps({
                             'type': 'progress',
-                            'message': f"✅ SQL Self-Correction Agent recovered query successfully on attempt {attempt}."
+                            'message': f"✅ SQL Self-Correction Agent recovered query successfully on attempt {attempt} ({row_cnt} rows)."
                         }))
                     except Exception:
                         pass
                 
                 return db_results, current_sql, attempt_history
+
             except Exception as e:
                 error_str = str(e)
                 last_error = error_str
@@ -640,45 +652,41 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
                 })
                 
                 print("💥" + "=" * 48 + "💥")
-                print(f"❌ [SQL VALIDATION AGENT] Attempt {attempt}/{max_retries + 1} Failed: {error_str[:140]}")
+                print(f"❌ [SQL VALIDATION AGENT] Attempt {attempt}/{max_retries + 1} Notice/Failed: {error_str[:140]}")
                 print("💥" + "=" * 48 + "💥")
                 
                 if attempt <= max_retries:
                     try:
                         self.send(json.dumps({
                             'type': 'progress',
-                            'message': f"⚠️ SQL Error on attempt {attempt}/{max_retries + 1}: {error_str[:70]}... Triggering AI Self-Correction."
+                            'message': f"⚠️ SQL Notice on attempt {attempt}/{max_retries + 1}: {error_str[:70]}... Triggering AI Self-Correction."
                         }))
                     except Exception:
                         pass
                     
-                    print(f"🔧 [SQL SELF-CORRECTION] Re-prompting LLM to correct T-SQL error (Retry {attempt}/{max_retries})...")
+                    print(f"🔧 [SQL SELF-CORRECTION] Re-prompting LLM with FULL PROMPT & Error Traceback (Retry {attempt}/{max_retries})...")
                     
-                    correction_prompt = f"""You are an expert T-SQL Database Specialist for Microsoft SQL Server.
-A generated T-SQL query failed execution on the database engine. Your task is to fix the SQL query so it runs cleanly and accurately on SQL Server.
+                    base_prompt_body = full_prompt.strip() if full_prompt and full_prompt.strip() else f"USER QUERY: \"{user_query}\"\n\nAVAILABLE TABLE SCHEMAS:\n{schemas_context}"
+                    
+                    correction_prompt = f"""{base_prompt_body}
 
-USER ORIGINAL QUESTION:
-"{user_query}"
-
-FAILED SQL QUERY:
-```sql
-{current_sql}
-```
-
-DATABASE ENGINE ERROR (T-SQL EXCEPTION):
-{error_str}
-
-AVAILABLE VALID TABLE SCHEMAS & COLUMN MAPS:
-{schemas_context if schemas_context else "Refer to standard database tables."}
-
-RULES FOR CORRECTION:
-1. Carefully analyze the exact error message (e.g. invalid column name, invalid object/table, ambiguous column name, syntax error).
-2. If a column name is invalid, substitute it with the valid column name from the available schema.
-3. Ensure all table names are enclosed in square brackets e.g. dbo.[TableName].
-4. If a column appears in multiple joined tables, explicitly alias it e.g. t1.[BranchID].
-5. Do NOT include markdown text explanation outside the code block. Output ONLY the corrected executable T-SQL query inside ```sql ... ``` code block.
-
-CORRECTED T-SQL QUERY:"""
+-- =========================================================
+-- ⚠️ ATTENTION LLM: PREVIOUS GENERATED T-SQL QUERY FAILED ON ATTEMPT {attempt}/{max_retries + 1}
+-- FAILED SQL QUERY:
+-- ```sql
+-- {current_sql}
+-- ```
+--
+-- DATABASE ENGINE ERROR / EXECUTION NOTICE:
+-- {error_str}
+--
+-- MANDATORY CORRECTION INSTRUCTION:
+-- 1. Carefully analyze the exact error or 0-row execution notice above.
+-- 2. If 0 ROWS were returned, check your WHERE filters, string literal values, case-sensitivity, and JOIN predicates.
+-- 3. If a column or table name was invalid, correct it using the AVAILABLE TABLE SCHEMAS provided in the prompt above.
+-- 4. Respond strictly with ONLY the corrected executable T-SQL query inside ```sql ... ``` code block.
+-- =========================================================
+"""
 
                     try:
                         resp = self.query_model.generate_content([correction_prompt])
@@ -695,7 +703,7 @@ CORRECTED T-SQL QUERY:"""
                                 corrected_sql = corrected_sql[select_idx:].strip()
 
                         if corrected_sql and corrected_sql != current_sql:
-                            print(f"⚡ [SQL SELF-CORRECTION AGENT] Generated corrected SQL:\n   {corrected_sql}")
+                            print(f"⚡ [SQL SELF-CORRECTION AGENT] Generated corrected SQL on Attempt {attempt + 1}:\n   {corrected_sql}")
                             current_sql = corrected_sql
                         else:
                             print("⚠️ Self-correction agent generated identical or empty SQL, stopping retries.")
@@ -705,6 +713,10 @@ CORRECTED T-SQL QUERY:"""
                         break
                 else:
                     print("❌ Exceeded maximum self-correction retries.")
+
+        if last_empty_results is not None:
+            print("⚠️ Returning last 0-row results as fallback after max self-correction retries.")
+            return last_empty_results, current_sql, attempt_history
 
         raise Exception(f"SQL execution failed after {max_retries + 1} attempts. Last error: {last_error}")
 
@@ -928,11 +940,13 @@ CORRECTED T-SQL QUERY:"""
                 print("🔧" + "-" * 48 + "🔧")
 
                 schemas_ctx = table_result.get('schemas_context', '')
+                full_p = table_result.get('final_generated_prompt', '')
                 db_results, final_sql, attempts_log = self.execute_sql_with_self_correction(
                     initial_sql=table_result['query'],
                     user_query=search_query,
                     schemas_context=schemas_ctx,
-                    max_retries=2
+                    full_prompt=full_p,
+                    max_retries=5
                 )
                 
                 # Update query in table_result to store corrected SQL in chat history & response
@@ -1648,6 +1662,48 @@ CORRECTED T-SQL QUERY:"""
 
                     all_table_names = [t for t in all_table_names if not is_backup_or_temp_table(t)]
 
+                    table_stats_map = {}
+                    try:
+                        with engine.connect() as s_conn:
+                            stats_rows = s_conn.execute(text("""
+                                WITH TableStats AS (
+                                    SELECT
+                                        ps.object_id,
+                                        SUM(CASE WHEN ps.index_id IN (0, 1) THEN ps.row_count ELSE 0 END) AS [TotalRows],
+                                        SUM(ps.reserved_page_count) AS [TotalPages]
+                                    FROM sys.dm_db_partition_stats ps
+                                    INNER JOIN sys.tables t ON ps.object_id = t.object_id
+                                    GROUP BY ps.object_id
+                                ),
+                                Dependencies AS (
+                                    SELECT
+                                        d.referenced_id AS object_id,
+                                        COUNT(DISTINCT d.referencing_id) AS [ReferencingObjectCount]
+                                    FROM sys.sql_expression_dependencies d
+                                    WHERE d.referenced_id IS NOT NULL AND d.referencing_id IS NOT NULL
+                                    GROUP BY d.referenced_id
+                                )
+                                SELECT
+                                    t.name AS TableName,
+                                    ISNULL(ts.[TotalRows], 0) AS TotalRows,
+                                    CAST(ISNULL(ts.[TotalPages], 0) * 8.0 / 1024 AS DECIMAL(18,2)) AS TotalSize_MB,
+                                    ISNULL(d.[ReferencingObjectCount], 0) AS ReferencingObjectCount
+                                FROM sys.tables t
+                                LEFT JOIN TableStats ts ON t.object_id = ts.object_id
+                                LEFT JOIN Dependencies d ON t.object_id = d.object_id
+                                WHERE t.is_ms_shipped = 0
+                            """)).fetchall()
+                            for s_row in stats_rows:
+                                s_name = s_row[0] or ""
+                                if s_name:
+                                    table_stats_map[s_name.strip().lower()] = {
+                                        "TotalRows": int(s_row[1] or 0),
+                                        "DataSize_MB": float(s_row[2] or 0.0),
+                                        "ReferencingObjectCount": int(s_row[3] or 0)
+                                    }
+                    except Exception as e_st:
+                        print(f"⚠️ [ChromaDB Auto-Syncer] Stats fetch notice: {e_st}")
+
                     t_ids, t_docs, t_metas = [], [], []
                     for t_name in all_table_names:
                         info = table_schemas_map.get(t_name, {"category": "", "subcategory": "", "prompt_snippets": []})
@@ -1693,7 +1749,7 @@ CORRECTED T-SQL QUERY:"""
 
                         purpose = doc_info.get("TablePurpose") or ""
                         if purpose and purpose.strip():
-                            doc_lines.append(f"Table Purpose:\n{purpose.strip()}")
+                            doc_lines.append(f"Business Purpose: {purpose}")
 
                         def clean_meaning(text):
                             if not text:
@@ -1767,14 +1823,36 @@ CORRECTED T-SQL QUERY:"""
                                         conn_names.append(f"dbo.[{rel_tbl}]")
                                 elif isinstance(item, str) and item.strip():
                                     conn_names.append(f"dbo.[{item.strip()}]")
-                        # Calculate Graph Centrality Priority Score
+                        
+                        # Calculate Production Priority Score incorporating Physical Row Counts & Dependencies
                         conn_count = len(conn_names) if 'conn_names' in locals() and conn_names else 0
                         graph_centrality = min(1.0, conn_count / 4.0)
                         t_name_lower = t_name.lower()
+                        stats = table_stats_map.get(t_name_lower, {"TotalRows": 0, "DataSize_MB": 0.0, "ReferencingObjectCount": 0})
+                        total_rows = stats["TotalRows"]
+                        ref_count = stats["ReferencingObjectCount"]
+                        dep_boost = min(0.20, ref_count * 0.05)
+
+                        is_backup = any(b in t_name_lower for b in ['_bkp', 'backup', 'bkp_', '_19june', '_28july', '_old', '_archive'])
+                        is_temp = any(tmp in t_name_lower for tmp in ['temp', 'tmp', '_copy', 'copy_'])
+                        is_staging = 'staging' in t_name_lower or 'dump' in t_name_lower
+                        penalty = -0.70 if is_backup else (-0.60 if is_temp else (-0.30 if is_staging else 0.0))
+
                         is_master = t_name_lower.startswith('mst_') or t_name_lower.startswith('accounts_') or 'hierarchy' in t_name_lower or 'geography' in t_name_lower
                         is_summary_score = 'riskscore' in t_name_lower or 'grades' in t_name_lower or 'summary' in t_name_lower or 'feedback' in t_name_lower
-                        bonus = (0.25 if is_master else 0.0) + (0.20 if is_summary_score else 0.0)
-                        p_score = round(max(0.10, min(1.00, 0.50 + (0.30 * graph_centrality) + bonus)), 2)
+                        bonus = (0.20 if is_master else 0.0) + (0.15 if is_summary_score else 0.0)
+
+                        row_score = 0.25 if total_rows >= 1000 else (0.15 if total_rows >= 100 else (0.10 if total_rows > 0 else 0.0))
+                        if total_rows == 0 and not (is_master and total_rows == 0):
+                            penalty += -0.65
+
+                        base_score = 0.40 + (0.20 * graph_centrality) + dep_boost + row_score + bonus + penalty
+                        if (is_backup or is_temp) and total_rows == 0:
+                            p_score = 0.01
+                        elif total_rows == 0 and not is_master:
+                            p_score = round(max(0.05, min(0.20, base_score)), 2)
+                        else:
+                            p_score = round(max(0.10, min(1.00, base_score)), 2)
 
                         t_ids.append(f"tbl_{t_name.replace(' ', '_').lower()}")
                         t_docs.append("\n\n".join(doc_lines))
@@ -1980,6 +2058,103 @@ CORRECTED T-SQL QUERY:"""
 
     _table_docs_cache = None
     _db_columns_cache = None
+    _column_samples_cache = None
+    _column_samples_cache_file = os.path.join(os.path.dirname(__file__), "scratch", "where_column_samples_cache.json")
+
+    @classmethod
+    def load_column_samples_cache(cls):
+        if cls._column_samples_cache is not None:
+            return cls._column_samples_cache
+        cls._column_samples_cache = {}
+        if os.path.exists(cls._column_samples_cache_file):
+            try:
+                with open(cls._column_samples_cache_file, "r", encoding="utf-8") as f:
+                    cls._column_samples_cache = json.load(f)
+            except Exception as e:
+                print(f"⚠️ Error loading column samples cache: {e}")
+        return cls._column_samples_cache
+
+    @classmethod
+    def save_column_samples_cache(cls):
+        if cls._column_samples_cache is None:
+            return
+        try:
+            os.makedirs(os.path.dirname(cls._column_samples_cache_file), exist_ok=True)
+            with open(cls._column_samples_cache_file, "w", encoding="utf-8") as f:
+                json.dump(cls._column_samples_cache, f)
+        except Exception as e:
+            print(f"⚠️ Error saving column samples cache: {e}")
+
+    @classmethod
+    def is_candidate_sample_column(cls, col_name, col_type="", user_query=""):
+        """Determines if a column is a candidate for WHERE clause sample value extraction."""
+        col_lower = col_name.lower().strip()
+        
+        status_patterns = [
+            'isactive', 'is_active', 'isdeleted', 'is_deleted', 'isapproved', 'is_approved',
+            'status', '_status', 'flag', '_flag', 'role', '_role', 'grade', '_grade',
+            'type', '_type', 'category', '_category', 'designation', '_title', 'title',
+            'zone', 'region', 'state', 'branch'
+        ]
+        if any(p in col_lower for p in status_patterns):
+            return True
+        
+        if col_lower.startswith('is_') or col_lower.startswith('is') or col_lower.startswith('has_') or col_lower.startswith('has'):
+            return True
+            
+        if user_query:
+            q_words = [w.lower() for w in re.findall(r'\b\w+\b', user_query) if len(w) > 2]
+            for qw in q_words:
+                if qw in col_lower:
+                    return True
+
+        if col_type:
+            ctype_lower = col_type.lower()
+            if 'bit' in ctype_lower or 'tinyint' in ctype_lower:
+                return True
+
+        return False
+
+    @classmethod
+    def get_column_sample_values(cls, engine, table_name, column_name):
+        """Fetches top 3 distinct sample values for a given table and column with instant local caching."""
+        cache = cls.load_column_samples_cache()
+        cache_key = f"{table_name.lower().strip()}::{column_name.lower().strip()}"
+        
+        if cache_key in cache:
+            return cache[cache_key]
+
+        if not engine:
+            return ""
+
+        try:
+            tbl_bracketed = f"dbo.[{table_name.strip('[]')}]"
+            col_bracketed = f"[{column_name.strip('[]')}]"
+            query = text(f"SELECT DISTINCT TOP 3 {col_bracketed} FROM {tbl_bracketed} WHERE {col_bracketed} IS NOT NULL AND LTRIM(RTRIM(CAST({col_bracketed} AS VARCHAR(MAX)))) <> ''")
+            
+            with engine.connect() as conn:
+                rows = conn.execute(query).fetchall()
+                vals = []
+                for r in rows:
+                    v = r[0]
+                    if v is None:
+                        continue
+                    if isinstance(v, (int, float)):
+                        vals.append(str(v))
+                    elif isinstance(v, bool):
+                        vals.append("1" if v else "0")
+                    else:
+                        v_str = str(v).strip()
+                        if len(v_str) <= 40:
+                            vals.append(f"'{v_str}'")
+                
+                formatted = ", ".join(vals) if vals else ""
+                cache[cache_key] = formatted
+                cls.save_column_samples_cache()
+                return formatted
+        except Exception as e:
+            cache[cache_key] = ""
+            return ""
 
     @classmethod
     def get_table_documentation_cache(cls, engine):
@@ -2214,7 +2389,14 @@ CORRECTED T-SQL QUERY:"""
                 annotated_lines = []
                 for c in columns:
                     type_str = f" ({c['type']})" if c['type'] else ""
-                    cmnt = f" -- {c['meaning']}" if c['meaning'] else ""
+                    cmnt_parts = []
+                    if c['meaning']:
+                        cmnt_parts.append(c['meaning'])
+                    if self.is_candidate_sample_column(c['name'], c['type'], user_query):
+                        s_vals = self.get_column_sample_values(engine, table_name, c['name'])
+                        if s_vals:
+                            cmnt_parts.append(f"[SAMPLE VALUES: {s_vals}]")
+                    cmnt = f" -- {' | '.join(cmnt_parts)}" if cmnt_parts else ""
                     annotated_lines.append(f"    {c['name']}{type_str}{cmnt}")
                 
                 header = f"-- Table: dbo.[{table_name}] ({len(columns)} columns)"
@@ -2267,6 +2449,10 @@ Return ONLY a JSON array of selected column names, e.g. ["col_a", "col_b"]. Do n
                     cmnt_parts.append("[KEY/JOIN]")
                 if c["meaning"]:
                     cmnt_parts.append(c["meaning"])
+                if self.is_candidate_sample_column(c['name'], c['type'], user_query):
+                    s_vals = self.get_column_sample_values(engine, table_name, c['name'])
+                    if s_vals:
+                        cmnt_parts.append(f"[SAMPLE VALUES: {s_vals}]")
                 cmnt_str = f" -- {' | '.join(cmnt_parts)}" if cmnt_parts else ""
                 annotated_lines.append(f"    {c['name']} {c['type']}{cmnt_str}")
 
@@ -2371,13 +2557,16 @@ Return ONLY a JSON array of selected column names, e.g. ["col_a", "col_b"]. Do n
                 doc_lower = doc.lower()
                 for qw in query_words:
                     if qw in tbl_lower or qw in doc_lower:
-                        kw_boost += 0.15
+                        kw_boost += 0.05
                 
                 # Severe deprioritization penalty for backup, archive, or temporary tables
                 is_backup = any(bk in tbl_lower for bk in ["_bkp", "_backup", "_temp", "temp_", "_old", "_archive", "_training_data_9aug"])
-                backup_penalty = -0.50 if is_backup else 0.0
+                backup_penalty = -0.80 if is_backup else 0.0
                 
-                final_prompt_score = round((0.75 * sim) + (0.15 * p_score) + min(kw_boost, 0.30) + backup_penalty, 4)
+                # Severe elimination penalty for 0-row empty tables (p_score <= 0.15)
+                empty_penalty = -0.80 if p_score <= 0.15 else 0.0
+                
+                final_prompt_score = round((0.40 * sim) + (0.45 * p_score) + min(kw_boost, 0.15) + backup_penalty + empty_penalty, 4)
                 ranked_prompt_candidates.append((tbl, doc, meta, final_prompt_score))
 
             # Sort top 5 semantic candidates by final prompt score descending
@@ -2740,6 +2929,13 @@ Return ONLY a JSON array of selected column names, e.g. ["col_a", "col_b"]. Do n
                     }
         except Exception as e_glob:
             print(f"[ChromaDB] Subcategory global search error: {e_glob}")
+
+        return {
+            'subcategory': 'general',
+            'confidence': 0.0,
+            'method': 'vector_chroma_fallback',
+            'reasoning': 'Subcategory vector search yielded no results or encountered an error'
+        }
 
     def detect_and_translate_to_english(self, message, source_language=None):
         """
@@ -3157,7 +3353,7 @@ EXPANDED QUERY:"""
         if getattr(HierarchicalSearchConsumer, '_chroma_initialized', False):
             print("🧠 Step 2: Chroma DB Vector Subcategory Classification...")
             vector_sub_result = self.classify_subcategory_chroma(message, category)
-            if vector_sub_result['confidence'] >= 0.45:
+            if vector_sub_result and isinstance(vector_sub_result, dict) and vector_sub_result.get('confidence', 0) >= 0.45:
                 print(f"🎯 [CHROMADB LEVEL 2 MATCH] Subcategory: '{vector_sub_result['subcategory']}' under '{category}' (similarity: {vector_sub_result['confidence']:.2f})")
                 return vector_sub_result
 
@@ -3670,7 +3866,6 @@ STRICT INSTRUCTIONS:
 3. CRITICAL TABLE MINIMALITY: ALWAYS check if a single table contains all the requested metrics and filters (e.g. [BranchName] and [RiskScore] both exist in dbo.[branchriskscore]). If ONE table is sufficient, write a simple SELECT ... FROM dbo.[table] with ZERO JOINS!
 4. CONDITIONAL JOINS: IF AND ONLY IF columns from multiple tables are strictly required, follow the CONDITIONAL RELATIONAL JOIN BLUEPRINT provided below. NEVER join a table if its columns are not needed!
 5. CRITICAL: When filtering on specific entities (branches, hubs, users, roles), use the exact RESOLVED DATABASE ENTITY GROUNDING literals provided below!
-6. CRITICAL: You MUST ONLY query or JOIN tables whose FULL schema and column definitions are explicitly provided below! Connected Tables lists are for relational awareness only; NEVER guess columns or query a table whose column list is not provided below!
 7. CRITICAL: When multiple tables contain similar columns (e.g. master tables vs backup _bkp tables), ALWAYS prefer active production tables with higher Production Priority Scores!
 8. THINKING PROCESS: Before writing the SQL query, include a 2-line SQL comment at the very top of your code block explaining:
    -- [THINKING]: 1. Target table(s) needed. 2. Is JOIN necessary (YES/NO)?

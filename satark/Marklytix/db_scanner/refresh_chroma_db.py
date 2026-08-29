@@ -98,40 +98,64 @@ def refresh_chroma_db():
         except Exception as e_tdoc:
             print(f"[WARN] Marklytix_TableDocumentation fetch warning: {e_tdoc}")
 
-        # A2. [COMMENTED OUT] Physical Table Stats query (TotalRows & DataSize_MB) from SQL Server sys views
-        # table_stats_map = {}
-        # try:
-        #     stats_rows = conn.execute(text("""
-        #         SELECT 
-        #             t.name AS TableName,
-        #             SUM(p.rows) AS TotalRows,
-        #             CAST(ROUND((SUM(a.total_pages) * 8.0) / 1024.0, 2) AS FLOAT) AS DataSize_MB
-        #         FROM sys.tables t
-        #         INNER JOIN sys.indexes i ON t.object_id = i.object_id
-        #         INNER JOIN sys.partitions p ON i.object_id = p.object_id AND i.index_id = p.index_id
-        #         INNER JOIN sys.allocation_units a ON p.partition_id = a.container_id
-        #         WHERE i.index_id IN (0, 1)
-        #         GROUP BY t.name
-        #     """)).fetchall()
-        #     for s_row in stats_rows:
-        #         s_name = s_row[0] or ""
-        #         if s_name:
-        #             table_stats_map[s_name.strip().lower()] = {
-        #                 "TotalRows": s_row[1] or 0,
-        #                 "DataSize_MB": s_row[2] or 0.0
-        #             }
-        # except Exception as e_stats:
-        #     print(f"[WARN] Table stats query warning: {e_stats}")
+        # A2. Physical Table Stats & Dependency Centrality query from SQL Server sys views
+        table_stats_map = {}
+        try:
+            stats_rows = conn.execute(text("""
+                WITH TableStats AS (
+                    SELECT
+                        ps.object_id,
+                        SUM(CASE WHEN ps.index_id IN (0, 1) THEN ps.row_count ELSE 0 END) AS [TotalRows],
+                        SUM(ps.reserved_page_count) AS [TotalPages]
+                    FROM sys.dm_db_partition_stats ps
+                    INNER JOIN sys.tables t ON ps.object_id = t.object_id
+                    GROUP BY ps.object_id
+                ),
+                Dependencies AS (
+                    SELECT
+                        d.referenced_id AS object_id,
+                        COUNT(DISTINCT d.referencing_id) AS [ReferencingObjectCount]
+                    FROM sys.sql_expression_dependencies d
+                    WHERE d.referenced_id IS NOT NULL AND d.referencing_id IS NOT NULL
+                    GROUP BY d.referenced_id
+                )
+                SELECT
+                    t.name AS TableName,
+                    ISNULL(ts.[TotalRows], 0) AS TotalRows,
+                    CAST(ISNULL(ts.[TotalPages], 0) * 8.0 / 1024 AS DECIMAL(18,2)) AS TotalSize_MB,
+                    ISNULL(d.[ReferencingObjectCount], 0) AS ReferencingObjectCount
+                FROM sys.tables t
+                LEFT JOIN TableStats ts ON t.object_id = ts.object_id
+                LEFT JOIN Dependencies d ON t.object_id = d.object_id
+                WHERE t.is_ms_shipped = 0
+            """)).fetchall()
+            for s_row in stats_rows:
+                s_name = s_row[0] or ""
+                if s_name:
+                    table_stats_map[s_name.strip().lower()] = {
+                        "TotalRows": int(s_row[1] or 0),
+                        "DataSize_MB": float(s_row[2] or 0.0),
+                        "ReferencingObjectCount": int(s_row[3] or 0)
+                    }
+        except Exception as e_stats:
+            print(f"[WARN] Table stats query warning: {e_stats}")
 
         def calculate_table_priority_score(table_name, connected_tables=None):
             """
-            Calculates Production Priority Score using Schema Graph Centrality (Relational Hub Degree Connectivity)
-            instead of physical storage/volume. This prevents compact master/summary tables (e.g. branchRiskScore)
-            from being penalized over massive raw center/transaction tables.
+            Calculates Production Priority Score blending:
+            1. Physical SQL Server row counts & size (suppressing 0-row empty tables)
+            2. SQL Server dependency graph centrality (ReferencingObjectCount)
+            3. Schema graph degree connectivity (ConnectedTables)
+            4. Production semantic archetype (Master, Score/Summary vs Backup/Temp)
             """
             t_name_lower = table_name.lower().strip()
             
-            # 1. Graph Centrality / Degree Connectivity (Number of connected tables in schema graph)
+            # 1. Fetch physical database stats
+            stats = table_stats_map.get(t_name_lower, {"TotalRows": 0, "DataSize_MB": 0.0, "ReferencingObjectCount": 0})
+            total_rows = stats["TotalRows"]
+            ref_count = stats["ReferencingObjectCount"]
+
+            # 2. Graph Centrality / Degree Connectivity (Number of connected tables in schema graph)
             conn_count = 0
             if isinstance(connected_tables, list):
                 conn_count = len(connected_tables)
@@ -140,8 +164,11 @@ def refresh_chroma_db():
             
             # Hub degree normalized (4+ connections = 1.0 hub score)
             graph_centrality = min(1.0, conn_count / 4.0)
+
+            # Dependency centrality (referenced by views, procedures, foreign keys)
+            dep_boost = min(0.20, ref_count * 0.05)
             
-            # 2. Penalties for Backups, Archived, Cloned & Temporary Tables
+            # 3. Penalties for Backups, Archived, Cloned & Temporary Tables
             is_backup = any(b in t_name_lower for b in ['_bkp', 'backup', 'bkp_', '_8june', '_19june', '_28july', '_12aug', '_old', '_archive'])
             is_temp = any(tmp in t_name_lower for tmp in ['temp', 'tmp', '_copy', 'copy_'])
             is_staging = 'staging' in t_name_lower or 'dump' in t_name_lower
@@ -152,24 +179,38 @@ def refresh_chroma_db():
             elif is_temp:
                 penalty = -0.60
             elif is_staging:
-                penalty = -0.20
+                penalty = -0.30
             
-            # 3. Core Master & Active Summary Dimension Bonuses
+            # 4. Core Master & Active Summary Dimension Bonuses
             is_master = t_name_lower.startswith('mst_') or t_name_lower.startswith('accounts_') or 'hierarchy' in t_name_lower or 'geography' in t_name_lower
             is_summary_score = 'riskscore' in t_name_lower or 'grades' in t_name_lower or 'summary' in t_name_lower or 'feedback' in t_name_lower
             
             bonus = 0.0
             if is_master:
-                bonus += 0.25
-            if is_summary_score:
                 bonus += 0.20
-                
-            # Base score derived 100% from Schema Graph Connectivity + Semantic Archetype
-            base_score = 0.50 + (0.30 * graph_centrality) + bonus + penalty
+            if is_summary_score:
+                bonus += 0.15
+
+            # 5. Row Count Signals & Zero-Row Penalty
+            row_score = 0.0
+            if total_rows >= 1000:
+                row_score = 0.25
+            elif total_rows >= 100:
+                row_score = 0.15
+            elif total_rows > 0:
+                row_score = 0.10
+            else:
+                if not (is_master and total_rows == 0):
+                    penalty += -0.65
+
+            base_score = 0.40 + (0.20 * graph_centrality) + dep_boost + row_score + bonus + penalty
             
-            if is_backup or is_temp:
+            if (is_backup or is_temp) and total_rows == 0:
                 return 0.01
-            
+
+            if total_rows == 0 and not is_master:
+                return round(max(0.05, min(0.20, base_score)), 2)
+
             return round(max(0.10, min(1.00, base_score)), 2)
 
         # B. Read Subcategory Prompts & Table Lists
