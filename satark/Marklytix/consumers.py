@@ -733,6 +733,7 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
         data = json.loads(text_data)
         message = data['message']
         username = data['username']
+        self.selected_model_engine = data.get('model_engine', 'local_fine_tuned')
 
         # Step 1: Multilingual Auto-Detection & Input Translation Agent
         user_lang_param = data.get('language') or data.get('selected_language') or getattr(self, 'language', None)
@@ -764,8 +765,8 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
         #     context = self.build_conversation_context(conversation_history)
         #     context_message = f"Previous conversation context:\n{context}\n\nCurrent question: {message}"
 
-        # Generate cache key for the message
-        cache_key = self.generate_cache_key(message)
+        # Generate cache key for the message & model engine combination
+        cache_key = self.generate_cache_key(f"{message}_{self.selected_model_engine}")
         
         # Check if response is already cached
         cached_response = self.get_cached_response(cache_key)
@@ -952,11 +953,14 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
                 # Update query in table_result to store corrected SQL in chat history & response
                 table_result['query'] = final_sql
                 
+                # Deduplicate DataFrame column names if duplicate columns exist (e.g. SELECT * FROM table1 JOIN table2)
+                db_results = db_results.loc[:, ~db_results.columns.duplicated()]
+
                 cols = list(db_results.columns)
                 cols_preview = f"{cols[:5]} (+{len(cols)-5} more)" if len(cols) > 5 else str(cols)
                 print(f"🎉 SQL executed successfully! Returned {len(db_results)} rows | Columns ({len(cols)} total): {cols_preview}")
                 
-                output = db_results.head(5).to_html(index=False, na_rep="-")
+                output = db_results.to_html(index=False, na_rep="-")
                 db_results_1 = db_results.head(5)
                 
                 interpreter_input = f"Database results: {db_results_1.to_json(orient='records')}"
@@ -1079,6 +1083,13 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
                     'final_generated_prompt': table_result.get('final_generated_prompt', table_result.get('prompt_used', 'N/A')),
                     'time_taken': (end_time_3 - start_time_3).total_seconds()
                 },
+                'model_engine_used': table_result.get('model_engine_used', 'Dedicated Fine-Tuned (ONNX CPU)'),
+                'level_3_5_model_engine': table_result.get('level_3_5_model_engine', {
+                    'selected_engine': 'Fine-Tuned (CPU ONNX)',
+                    'engine_used_label': 'Dedicated Fine-Tuned (ONNX CPU)',
+                    'is_fallback': False,
+                    'execution_target': 'CPU (ONNX Quantized Model)'
+                }),
                 'level_4_execution': {
                     'status': 'success' if 'db_results' in locals() and db_results is not None else 'failed',
                     'row_count': len(db_results) if 'db_results' in locals() and db_results is not None else 0,
@@ -2465,15 +2476,16 @@ Return ONLY a JSON array of selected column names, e.g. ["col_a", "col_b"]. Do n
             print(f"💥 Error in prune_table_schema for {table_name}: {err}")
             return raw_schema_text
 
-    def retrieve_top_k_schemas_chroma(self, query, k=10, prompt_k=4, table_names=None):
+    def retrieve_top_k_schemas_chroma(self, query, k=10, prompt_k=4, table_names=None, grounded_tables=None):
         """
         Hybrid Global + Subcategory RAG Table Schema Retrieval with Dynamic Column Pruning:
         Combines global semantic vector search across all database tables
         with subcategory-scoped table lookups to ensure the correct tables
         are NEVER missed due to high-level misclassification.
         
-        Retrieves top k (5) tables from vector store, but passes only top prompt_k (2)
+        Retrieves top k (5) tables from vector store, but passes only top prompt_k (4)
         highest priority table schemas to the final LLM prompt with Approach C Column Pruning.
+        Grounded entity tables (e.g. accounts_mst_usertbl) receive a priority boost to ensure schema presence.
         """
         if not HAS_CHROMADB:
             return "", []
@@ -2547,26 +2559,40 @@ Return ONLY a JSON array of selected column names, e.g. ["col_a", "col_b"]. Do n
             table_list_formatted = [f"dbo.[{t}] (Similarity: {entry[3]:.2f}, Priority: {entry[4]:.2f})" for t, entry in zip(retrieved_tables, top_k_semantic_entries)]
             print(f"🎯 [RAG TOP 5 SEMANTIC TABLES RETRIEVED FROM CHROMADB] ({len(retrieved_tables)} tables): {table_list_formatted}")
 
-            # Step 2: Rank top prompt_k (2) schemas from the retrieved top 5 semantic candidates
+            # Step 2: Rank top prompt_k (4) schemas from the retrieved top 5 semantic candidates
+            clean_grounded = [gt.lower().replace("dbo.[", "").replace("]", "").replace("[", "").replace("dbo.", "") for gt in (grounded_tables or [])]
+            
+            # Discover Relational Join Bridge Tables using MarklytixRelationalGraph
+            bridge_tables = set()
+            try:
+                graph_engine = MarklytixRelationalGraph.get_instance(engine=getattr(self, 'engine', None) or get_shared_db_engine())
+                if retrieved_tables and len(retrieved_tables) >= 1:
+                    _, discovered_bridges = graph_engine.get_relational_join_blueprint(retrieved_tables[:4])
+                    for b in (discovered_bridges or []):
+                        clean_b = b.lower().replace("dbo.[", "").replace("]", "").replace("[", "").replace("dbo.", "")
+                        if clean_b:
+                            bridge_tables.add(clean_b)
+            except Exception:
+                pass
+
             query_words = [w.lower() for w in query.split() if len(w) > 3]
             ranked_prompt_candidates = []
             for tbl, doc, meta, sim, p_score in top_k_semantic_entries:
-                # Keyword relevance boost if user terms appear in table name or document text
+                tbl_clean = tbl.lower().replace("dbo.[", "").replace("]", "").replace("[", "").replace("dbo.", "")
+                grounded_boost = 1.0 if tbl_clean in clean_grounded else 0.0
+                bridge_boost = 0.80 if tbl_clean in bridge_tables else 0.0
+
                 kw_boost = 0.0
-                tbl_lower = tbl.lower()
                 doc_lower = doc.lower()
                 for qw in query_words:
-                    if qw in tbl_lower or qw in doc_lower:
+                    if qw in tbl_clean or qw in doc_lower:
                         kw_boost += 0.05
-                
-                # Severe deprioritization penalty for backup, archive, or temporary tables
-                is_backup = any(bk in tbl_lower for bk in ["_bkp", "_backup", "_temp", "temp_", "_old", "_archive", "_training_data_9aug"])
+
+                is_backup = any(bk in tbl_clean for bk in ["_bkp", "_backup", "_temp", "temp_", "_old", "_archive", "_training_data_9aug"])
                 backup_penalty = -0.80 if is_backup else 0.0
-                
-                # Severe elimination penalty for 0-row empty tables (p_score <= 0.15)
                 empty_penalty = -0.80 if p_score <= 0.15 else 0.0
-                
-                final_prompt_score = round((0.40 * sim) + (0.45 * p_score) + min(kw_boost, 0.15) + backup_penalty + empty_penalty, 4)
+
+                final_prompt_score = round((0.40 * sim) + (0.45 * p_score) + min(kw_boost, 0.15) + grounded_boost + bridge_boost + backup_penalty + empty_penalty, 4)
                 ranked_prompt_candidates.append((tbl, doc, meta, final_prompt_score))
 
             # Sort top 5 semantic candidates by final prompt score descending
@@ -3804,7 +3830,27 @@ EXPANDED QUERY:"""
             if "Current question:" in clean_query:
                 clean_query = clean_query.split("Current question:")[-1].strip()
 
-            rag_schemas, retrieved_tables = self.retrieve_top_k_schemas_chroma(clean_query, k=10, prompt_k=4, table_names=available_tables)
+            # Step 1: Entity Value Grounding & Typo Resolution FIRST (XiYan-SQL / SDE-SQL Paradigm)
+            entity_grounding_block = ""
+            grounded_tables = []
+            try:
+                entity_engine = MarklytixEntityGroundingEngine.get_instance(engine=getattr(self, 'engine', None) or get_shared_db_engine())
+                grounding_query = search_target_message if 'search_target_message' in locals() else clean_query
+                resolved_entries = entity_engine.resolve_entities(grounding_query, candidate_tables=None)
+                if resolved_entries:
+                    grounded_tables = [r["table"] for r in resolved_entries if r.get("table")]
+                    for gt in grounded_tables:
+                        clean_gt = gt.lower().replace("dbo.[", "").replace("]", "").replace("[", "").replace("dbo.", "")
+                        if clean_gt and clean_gt not in [t.lower().replace("dbo.[", "").replace("]", "").replace("[", "").replace("dbo.", "") for t in available_tables]:
+                            available_tables.append(clean_gt)
+                entity_grounding_block = entity_engine.get_grounding_prompt_block(grounding_query, candidate_tables=available_tables)
+                if entity_grounding_block:
+                    print(f"🎯 [ENTITY VALUE GROUNDING] Injected verified database entity literals into prompt (scoped to candidate tables)")
+            except Exception as e_ent:
+                print(f"⚠️ [Entity Grounding Prompt Error]: {e_ent}")
+
+            # Step 2: Dynamic Chroma DB Schema RAG Retrieval (with Grounded Tables Priority Boost)
+            rag_schemas, retrieved_tables = self.retrieve_top_k_schemas_chroma(clean_query, k=10, prompt_k=4, table_names=available_tables, grounded_tables=grounded_tables)
             end_time_0 = datetime.now()
             rag_time_taken = round((end_time_0 - start_time_0).total_seconds(), 3)
             
@@ -3827,19 +3873,6 @@ EXPANDED QUERY:"""
 
             # Dislike Feedback Warnings (Anti-Pattern Rules from close disliked queries)
             dislike_warnings = self.retrieve_dislike_feedback_warnings(clean_query, k=1)
-
-            # Entity Value Grounding & Typo Resolution (XiYan-SQL / SDE-SQL Paradigm)
-            entity_grounding_block = ""
-            try:
-                entity_engine = MarklytixEntityGroundingEngine.get_instance(engine=getattr(self, 'engine', None) or get_shared_db_engine())
-                candidate_tables_for_grounding = retrieved_tables if retrieved_tables else available_tables
-                # Ground against original user intent query to avoid expansion stopword noise
-                grounding_query = search_target_message if 'search_target_message' in locals() else clean_query
-                entity_grounding_block = entity_engine.get_grounding_prompt_block(grounding_query, candidate_tables=candidate_tables_for_grounding)
-                if entity_grounding_block:
-                    print(f"🎯 [ENTITY VALUE GROUNDING] Injected verified database entity literals into prompt (scoped to candidate tables)")
-            except Exception as e_ent:
-                print(f"⚠️ [Entity Grounding Prompt Error]: {e_ent}")
 
             # GRAG: Generate Explicit Relational Join Blueprint across candidate tables
             join_blueprint = ""
@@ -3890,9 +3923,6 @@ USER QUERY: "{message}"
 
 Respond strictly with ONLY the executable T-SQL query block.
 """
-
-
-            
             # Log Prompt Metrics & Token Health
             prompt_len = len(complete_prompt)
             approx_tokens = int(prompt_len / 4)
@@ -3908,11 +3938,38 @@ Respond strictly with ONLY the executable T-SQL query block.
             print(complete_prompt)
             print("📝" + "=" * 50 + "📝\n")
 
-            # Use your existing chat2 model with the specialized prompt
-            print("🤖 Sending prompt to AI model for SQL generation...")
-            response = self.query_model.generate_content([complete_prompt])
-            query = response.text.strip()
-            print(f"✅ SQL query generated: {query[:100]}...")
+            # Check user selected model engine ('local_fine_tuned' vs 'gemma_gateway')
+            requested_engine = getattr(self, 'selected_model_engine', 'local_fine_tuned')
+            local_generated_sql = None
+            fallback_reason = None
+            is_fallback = False
+
+            if requested_engine == 'local_fine_tuned':
+                try:
+                    from Marklytix.fine_tuning.scripts.local_sql_model_engine import LocalSqlModelEngine
+                    local_engine = LocalSqlModelEngine.get_instance()
+                    if local_engine.is_onnx_loaded:
+                        local_generated_sql = local_engine.generate_sql(complete_prompt, user_query=message)
+                    else:
+                        fallback_reason = "Model weights file (dedicated_sql_model.onnx) pending training"
+                        print("ℹ️ [MODEL SELECTION] Dedicated Fine-Tuned ONNX model weights not found in models/ folder. Falling back to Gemma Gateway API.")
+                except Exception as e_local:
+                    fallback_reason = str(e_local)
+                    print(f"⚠️ [LOCAL CPU ENGINE] Local engine notice: {e_local}")
+
+            if local_generated_sql:
+                print(f"⚡ [MODEL SELECTION] Using Dedicated Local Fine-Tuned CPU ONNX Engine.")
+                query = local_generated_sql
+                engine_used_label = "Dedicated Fine-Tuned (ONNX CPU)"
+                is_fallback = False
+            else:
+                print(f"🤖 [MODEL SELECTION] Generating T-SQL via Gemma Gateway API (Shared GPU)...")
+                response = self.query_model.generate_content([complete_prompt])
+                query = response.text.strip()
+                is_fallback = (requested_engine == 'local_fine_tuned')
+                engine_used_label = "Fine-Tuned (CPU ONNX) [Fallback to Gateway]" if is_fallback else "Gemma Gateway (Shared GPU)"
+
+            print(f"✅ SQL query generated using [{engine_used_label}]: {query[:100]}...")
 
             
             # Clean up the response (remove markdown if present)
@@ -3942,7 +3999,7 @@ Respond strictly with ONLY the executable T-SQL query block.
             else:
                 print("✅ Query validation passed")
                 confidence = 0.9
-                reasoning = f'Generated query using specialized {subcategory} prompt'
+                reasoning = 'Generated specialized T-SQL query'
                 used_tables = retrieved_tables[:2] if retrieved_tables else available_tables[:2]
             
             print(f"🎯 Final result: {confidence:.2f} confidence using {reasoning}")
@@ -3955,6 +4012,14 @@ Respond strictly with ONLY the executable T-SQL query block.
                 'prompt_used': f"{category}_{subcategory}",
                 'final_generated_prompt': complete_prompt,
                 'schemas_context': rag_schemas,
+                'model_engine_used': engine_used_label,
+                'level_3_5_model_engine': {
+                    'selected_engine': 'Fine-Tuned (CPU ONNX)' if requested_engine == 'local_fine_tuned' else 'Gemma Gateway (Shared GPU)',
+                    'engine_used_label': engine_used_label,
+                    'is_fallback': is_fallback,
+                    'fallback_reason': fallback_reason,
+                    'execution_target': 'CPU (ONNX Quantized Model)' if local_generated_sql else ('Gateway API (Fallback: Weights Pending)' if is_fallback else 'Shared GPU (Gateway API)')
+                },
                 'level_0_rag_tables': {
                     'tables_fetched': tables_fetched_formatted,
                     'raw_table_names': retrieved_tables if retrieved_tables else available_tables[:5],

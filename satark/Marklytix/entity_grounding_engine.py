@@ -74,8 +74,7 @@ CACHE_TTL = timedelta(hours=12)
 # don't cause massive, useless candidate sets.
 _STOPWORDS = {
     "the", "a", "an", "of", "for", "and", "or", "in", "on", "at", "to",
-    "user", "users", "details", "detail", "info", "information", "record",
-    "records", "branch", "hub", "region", "zone", "role", "status", "id",
+    "details", "detail", "info", "information", "record", "records"
 }
 
 # Default per-entity-type similarity thresholds. Short identifiers (single
@@ -492,15 +491,16 @@ class MarklytixEntityGroundingEngine:
             return {"entities": [], "requested_metrics": []}
 
         sys_prompt = """You are an expert NLP Entity & Intent Extraction Assistant for SQL database natural language interfaces.
-Extract entity filter mentions (e.g. branch names, region names, division names, user names, role titles, numeric IDs, status values) from the user query.
+Extract ONLY specific literal search filter values (e.g., specific user names 'Abhishek Bhattacharya', specific IDs '2158', specific statuses 'Closed'/'Resolved') from the user query.
 
-CRITICAL INSTRUCTION:
-DO NOT extract SQL metric request words (such as 'collection', 'amount', 'rate', 'percentage', 'count', 'total', 'summary', 'details') as entity filter mentions.
+CRITICAL PRODUCT RULES:
+1. DO NOT extract generic category nouns, column headers, or entity role names (such as 'auditor', 'auditors', 'branch', 'branches', 'role', 'roles', 'user', 'users', 'status') as entity filter mentions!
+2. DO NOT extract SQL metric request words (such as 'collection', 'amount', 'rate', 'percentage', 'count', 'total', 'summary', 'details') as entity filter mentions.
 
 Respond strictly with ONLY a valid JSON object matching this schema:
 {
   "entities": [
-    {"mention": "<extracted entity value/ID>", "type": "<division/branch/region/zone/role/user/id/status/etc>"}
+    {"mention": "<extracted specific literal filter value/ID>", "type": "<division/branch/region/zone/role/user/id/status/etc>"}
   ],
   "requested_metrics": ["<metric>"]
 }"""
@@ -558,6 +558,22 @@ Respond strictly with ONLY a valid JSON object matching this schema:
 
         return entries[0]
 
+    def _is_category_concept(self, mention_lower: str, ent_type: str) -> bool:
+        """
+        Dynamically checks if a mention is a category concept / column header noun.
+        100% Generic & Product-Grade across ANY database schema without hardcoded lists.
+        """
+        if not mention_lower:
+            return True
+        if ent_type and (mention_lower == ent_type or mention_lower == f"{ent_type}s" or ent_type == f"{mention_lower}s" or ent_type.startswith(mention_lower)):
+            return True
+        for entry_list in self.entity_registry.values():
+            for meta in entry_list:
+                col_stem = _get_column_prefix(meta.get("column", ""))
+                if col_stem and (mention_lower == col_stem or mention_lower == f"{col_stem}s" or col_stem == f"{mention_lower}s"):
+                    return True
+        return False
+
     def resolve_entities(self, query: str, candidate_tables: list = None, threshold: float = None) -> list:
         """
         Hybrid LLM Entity Extractor + Dynamic Database Value Grounding.
@@ -583,6 +599,10 @@ Respond strictly with ONLY a valid JSON object matching this schema:
             if not mention:
                 continue
             mention_lower = mention.lower()
+
+            # Dynamic Product Rule: Skip value grounding if mention is a column concept or attribute noun
+            if mention_lower in _STOPWORDS or self._is_category_concept(mention_lower, ent_type):
+                continue
 
             # A. Numeric ID grounding
             if mention.isdigit() and mention in self.numeric_registry:

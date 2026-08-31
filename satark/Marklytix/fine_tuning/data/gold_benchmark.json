@@ -1,0 +1,92 @@
+[
+  {
+    "id": 1,
+    "category": "User & Role Lookups",
+    "question": "Give me all active users along with their role names.",
+    "gold_sql": "SELECT u.[UserID], u.[UserName], u.[UserCode], r.[RoleId], r.[RoleName] FROM dbo.[accounts_mst_usertbl] u INNER JOIN dbo.[map_userRole] ur ON u.[UserID] = ur.[UserID] INNER JOIN dbo.[mst_role] r ON ur.[RoleId] = r.[RoleId] WHERE u.[IsActive] = 1;"
+  },
+  {
+    "id": 2,
+    "category": "Branch Performance",
+    "question": "Show me all branches in Patna division along with their current audit grades.",
+    "gold_sql": "SELECT b.[BRANCHID], b.[BranchName], b.[Division], g.[Grade], g.[Score] FROM dbo.[branchriskscore] b INNER JOIN dbo.[audit_branch_grade_history_final] g ON b.[BRANCHID] = g.[Branch_ID] WHERE b.[Division] = 'Patna';"
+  },
+  {
+    "id": 3,
+    "category": "Branch Specific Filter",
+    "question": "Branch 105 ka current audit start date aur audit score percentage batao.",
+    "gold_sql": "SELECT b.[BRANCHID], b.[BranchName], s.[audit_id], s.[total_score], s.[total_max_score], s.[score_pct] FROM dbo.[branchriskscore] b INNER JOIN dbo.[audit_branch_score_summary] s ON b.[BRANCHID] = s.[branch_id] WHERE b.[BRANCHID] = '105';"
+  },
+  {
+    "id": 4,
+    "category": "Compliance & Users",
+    "question": "List all compliance tickets along with the assigned user's full name.",
+    "gold_sql": "SELECT t.[ticket_id], t.[branchid], t.[status], t.[severity], u.[UserName] AS AssignedUser FROM dbo.[compliance_tickets] t INNER JOIN dbo.[accounts_mst_usertbl] u ON t.[assigned_to_id] = u.[UserID];"
+  },
+  {
+    "id": 5,
+    "category": "Feature Staging",
+    "question": "Patna region ke sabhi branches ka OMD collection rate percentage and risk score dikhao.",
+    "gold_sql": "SELECT b.[BRANCHID], b.[BranchName], b.[RiskScore], fs.[omd_reconciliation_collection_rate_pct], fs.[omd_reconciliation_collection_amount] FROM dbo.[branchriskscore] b INNER JOIN dbo.[ml_tbl_monthly_branch_feature_staging] fs ON b.[BRANCHID] = fs.[branchid] WHERE b.[Region] = 'Patna' OR b.[Division] = 'Patna';"
+  },
+  {
+    "id": 6,
+    "category": "Audit Planning",
+    "question": "Show all ongoing audit plans along with the assigned auditor's user code.",
+    "gold_sql": "SELECT p.[branch_id], p.[audit_mode], p.[duration], p.[status], u.[UserCode], u.[UserName] FROM dbo.[audit_plan_current] p INNER JOIN dbo.[accounts_mst_usertbl] u ON p.[assigned_auditor] = u.[UserCode] WHERE p.[status] = 'ONGOING' OR p.[status] = 'IN_PROGRESS';"
+  },
+  {
+    "id": 7,
+    "category": "Multi-Hop Auditor Role",
+    "question": "Branch 105 ka audit jis auditor ne kiya h uska role name and role id kya h batao",
+    "gold_sql": "SELECT s.[branch_id], u.[UserID], u.[UserName] AS AuditorName, r.[RoleId], r.[RoleName] FROM dbo.[audit_branch_score_summary] s INNER JOIN dbo.[accounts_mst_usertbl] u ON s.[auditor_id] = u.[UserID] INNER JOIN dbo.[map_userRole] ur ON u.[UserID] = ur.[UserID] INNER JOIN dbo.[mst_role] r ON ur.[RoleId] = r.[RoleId] WHERE s.[branch_id] = '105';"
+  },
+  {
+    "id": 8,
+    "category": "Audit History & Scores",
+    "question": "Retrieve branch name, division, total audit score, and auditor name for all audits conducted in Patna.",
+    "gold_sql": "SELECT g.[Branch_Name], g.[Division], s.[total_score], s.[score_pct], u.[UserName] AS AuditorName FROM dbo.[audit_branch_grade_history_final] g INNER JOIN dbo.[audit_branch_score_summary] s ON g.[Branch_ID] = s.[branch_id] INNER JOIN dbo.[accounts_mst_usertbl] u ON s.[auditor_id] = u.[UserID] WHERE g.[Division] = 'Patna';"
+  },
+  {
+    "id": 9,
+    "category": "Checklist Feedback",
+    "question": "Show me all checklist questions with negative ('No') answers, section names, and auditor role names for branch 105.",
+    "gold_sql": "SELECT f.[branch_id], f.[section_name], f.[intent_title], f.[answer], r.[RoleName] FROM dbo.[audit_branch_checklist_feedback] f INNER JOIN dbo.[accounts_mst_usertbl] u ON f.[auditor_id] = u.[UserID] INNER JOIN dbo.[map_userRole] ur ON u.[UserID] = ur.[UserID] INNER JOIN dbo.[mst_role] r ON ur.[RoleId] = r.[RoleId] WHERE f.[branch_id] = '105' AND f.[answer] = 'No';"
+  },
+  {
+    "id": 10,
+    "category": "Auditor Role Filter",
+    "question": "Give me a list of all Field Auditors who completed audits in Patna region along with branch names.",
+    "gold_sql": "SELECT b.[BranchName], u.[UserName] AS AuditorName, r.[RoleName] FROM dbo.[branchriskscore] b INNER JOIN dbo.[audit_branch_score_summary] s ON b.[BRANCHID] = s.[branch_id] INNER JOIN dbo.[accounts_mst_usertbl] u ON s.[auditor_id] = u.[UserID] INNER JOIN dbo.[map_userRole] ur ON u.[UserID] = ur.[UserID] INNER JOIN dbo.[mst_role] r ON ur.[RoleId] = r.[RoleId] WHERE b.[Division] = 'Patna' AND r.[RoleName] = 'Field Auditor';"
+  },
+  {
+    "id": 11,
+    "category": "Multi-Table 4-Join Enterprise",
+    "question": "Retrieve branch name, region, collection rate percentage, total audit score, and assigned auditor role name for Patna division.",
+    "gold_sql": "SELECT b.[BranchName], b.[Region], fs.[omd_reconciliation_collection_rate_pct], s.[total_score], r.[RoleName] FROM dbo.[branchriskscore] b INNER JOIN dbo.[ml_tbl_monthly_branch_feature_staging] fs ON b.[BRANCHID] = fs.[branchid] INNER JOIN dbo.[audit_branch_score_summary] s ON b.[BRANCHID] = s.[branch_id] INNER JOIN dbo.[accounts_mst_usertbl] u ON s.[auditor_id] = u.[UserID] INNER JOIN dbo.[map_userRole] ur ON u.[UserID] = ur.[UserID] INNER JOIN dbo.[mst_role] r ON ur.[RoleId] = r.[RoleId] WHERE b.[Division] = 'Patna';"
+  },
+  {
+    "id": 12,
+    "category": "Top Ranking & Risk",
+    "question": "Show top 5 high-risk branches in Patna with their risk score, total audit score, auditor name, and auditor designation.",
+    "gold_sql": "SELECT TOP 5 b.[BranchName], b.[RiskScore], s.[total_score], u.[UserName] AS AuditorName, r.[RoleName] AS Designation FROM dbo.[branchriskscore] b INNER JOIN dbo.[audit_branch_score_summary] s ON b.[BRANCHID] = s.[branch_id] INNER JOIN dbo.[accounts_mst_usertbl] u ON s.[auditor_id] = u.[UserID] INNER JOIN dbo.[map_userRole] ur ON u.[UserID] = ur.[UserID] INNER JOIN dbo.[mst_role] r ON ur.[RoleId] = r.[RoleId] WHERE b.[Division] = 'Patna' ORDER BY b.[RiskScore] DESC;"
+  },
+  {
+    "id": 13,
+    "category": "Aggregations",
+    "question": "What is the average audit score percentage for each auditor role across all branches?",
+    "gold_sql": "SELECT r.[RoleName], AVG(s.[score_pct]) AS AvgScorePct, COUNT(s.[audit_id]) AS TotalAudits FROM dbo.[audit_branch_score_summary] s INNER JOIN dbo.[accounts_mst_usertbl] u ON s.[auditor_id] = u.[UserID] INNER JOIN dbo.[map_userRole] ur ON u.[UserID] = ur.[UserID] INNER JOIN dbo.[mst_role] r ON ur.[RoleId] = r.[RoleId] GROUP BY r.[RoleName];"
+  },
+  {
+    "id": 14,
+    "category": "Auditor Workload",
+    "question": "Count the total number of audits conducted by each auditor in Patna division along with their role name.",
+    "gold_sql": "SELECT u.[UserName] AS AuditorName, r.[RoleName], COUNT(s.[audit_id]) AS AuditCount FROM dbo.[audit_branch_score_summary] s INNER JOIN dbo.[accounts_mst_usertbl] u ON s.[auditor_id] = u.[UserID] INNER JOIN dbo.[map_userRole] ur ON u.[UserID] = ur.[UserID] INNER JOIN dbo.[mst_role] r ON ur.[RoleId] = r.[RoleId] INNER JOIN dbo.[branchriskscore] b ON s.[branch_id] = b.[BRANCHID] WHERE b.[Division] = 'Patna' GROUP BY u.[UserName], r.[RoleName];"
+  },
+  {
+    "id": 15,
+    "category": "Complex Multi-Table Filter",
+    "question": "Find branches where the actual audit grade is 'C' but the risk grade is 'MODERATE', along with the auditor's name and role.",
+    "gold_sql": "SELECT g.[Branch_Name], g.[Grade] AS AuditGrade, b.[RiskGrade], u.[UserName] AS AuditorName, r.[RoleName] FROM dbo.[audit_branch_grade_history_final] g INNER JOIN dbo.[branchriskscore] b ON g.[Branch_ID] = b.[BRANCHID] INNER JOIN dbo.[audit_branch_score_summary] s ON g.[Branch_ID] = s.[branch_id] INNER JOIN dbo.[accounts_mst_usertbl] u ON s.[auditor_id] = u.[UserID] INNER JOIN dbo.[map_userRole] ur ON u.[UserID] = ur.[UserID] INNER JOIN dbo.[mst_role] r ON ur.[RoleId] = r.[RoleId] WHERE g.[Grade] = 'C' AND b.[RiskGrade] = 'MODERATE';"
+  }
+]
