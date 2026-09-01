@@ -1309,10 +1309,17 @@ Return ONLY the English translation."""
                 output = db_results.to_html(index=False, na_rep="-")
                 db_results_1 = db_results.head(5)
                 
-                interpreter_input = f"Database results: {db_results_1.to_json(orient='records')}"
-                interpreter_response = self.chat1.send_message([interpreter_input, context_message])
-                ai_response = interpreter_response.text
+                interpreter_input = f"""Analyze these database query results for the question "{context_message}":
+Database results: {db_results_1.to_json(orient='records')}
 
+Provide a concise, professional executive briefing (3-4 sentences) summarizing the key findings."""
+                try:
+                    interpreter_response = self.query_model.generate_content([interpreter_input])
+                    ai_response = interpreter_response.text.strip()
+                except Exception as e_interp:
+                    print(f"⚠️ Executive narrative synthesis warning: {e_interp}")
+                    ai_response = f"Query executed successfully. Displaying {len(db_results)} rows of data below."
+                
                 # Calculate execution time
                 end_time_4 = datetime.now()
                 execution_time = (end_time_4 - start_time_4).total_seconds()
@@ -1344,9 +1351,17 @@ Return ONLY the English translation."""
                 table = ""
                 end_time_4 = datetime.now()
             else:
-                interpreter_input = f"question : {context_message}"
-                interpreter_response = self.chat1.send_message([interpreter_input, context_message])
-                ai_response = interpreter_response.text
+                interpreter_input = f"""You are Sonata Satark AI Assistant — a smart, friendly, and helpful database intelligence assistant for Sonata Microfinance.
+Respond politely, warmly, and helpfully to the user's greeting or question.
+
+User Message: "{context_message}" """
+                try:
+                    interpreter_response = self.query_model.generate_content([interpreter_input])
+                    ai_response = interpreter_response.text.strip()
+                except Exception as e_gen:
+                    print(f"⚠️ General AI response generation warning: {e_gen}")
+                    ai_response = "Hello! 👋 I am the Sonata Satark AI Assistant. How can I help you analyze field audit scores, user accounts, branch risk data, or call recordings today?"
+                
                 print(f"🤖 AI Response Type: {type(ai_response)}")
                 end_time_4 = datetime.now()
                 print(f"⏱️  Time taken for response generation: {(end_time_4 - start_time_4).total_seconds():.3f} seconds")
@@ -3612,7 +3627,7 @@ TRANSLATED RESPONSE ({lang_clean.upper()}):"""
         raw_query = message.strip()
         words = raw_query.split()
         
-        # Smart Bypass: If prompt is already detailed (>=8 words or >=60 chars), return as-is
+        # Smart Bypass: If prompt is already detailed (>=14 words or >=90 chars), return as-is
         if len(words) >= 14 or len(raw_query) >= 90:
             return raw_query, False, 0.0
 
@@ -3628,7 +3643,7 @@ RULES:
 4. Do NOT generate SQL code or markdown blocks. Output ONLY the expanded natural language query text.
 5. DO NOT CHANGE THE MEANING OF THE ASKED QUESTION.
 6. STRICTLY PRESERVE CORE NOUNS: Do NOT introduce unmentioned topic nouns or metrics. For example, if the user asks for 'feedback', do NOT insert 'performance' or 'metrics' — keep 'feedback' intact to hit tables like audit_branch_checklist_feedback.
-7. SIMPLE GREETINGS / GENERIC CONVERSATIONAL INPUTS: If the input is a simple greeting, pleasantry, or general non-database message (e.g. "hi", "hello", "hey", "good morning", "thanks", "who are you", "bye"), DO NOT EXPAND IT into a database query. Output the user's input EXACTLY AS-IS without adding any database terms, assistant intros, or extra words.
+7. CONVERSATIONAL GREETINGS & GENERAL QUESTIONS: If the input is a simple greeting, pleasantry, or general non-database message (e.g. "hi", "hello", "hey", "good morning", "thanks", "who are you", "bye"), DO NOT EXPAND IT into a database query. Output the user's input EXACTLY AS-IS without adding any database terms, assistant intros, or extra words.
 
 SHORTHAND QUERY: "{raw_query}"
 
@@ -3816,17 +3831,19 @@ EXPANDED QUERY:"""
             valid_categories = list(self.category_keywords_db.keys())
             
             prompt = f"""
-            You are a database query classifier. Analyze this user query and classify it into ONE of these categories:
+            You are a database query classifier for an enterprise SQL intelligence assistant. Analyze this user query and classify it into ONE of these categories:
             categories are only within the below list:(eg - category_name: 'keyword1', 'keyword2', 'keyword3'):
 
             {categories_prompt_str}
+            
+            NOTE: If the user query is a simple greeting, pleasantry, assistant question (e.g., "hi", "hello", "who are you", "what can you do", "thanks"), or general non-database question, output: general|1.00
             
             User Query: "{message}"
             
             Respond with ONLY the category name and confidence score (0.0 to 1.0).
             Format: category_name|confidence_score
             
-            Example: sonata premier league|0.85
+            Example: domain 1: user interaction, session management & security auditing|0.85
             """
             
             response = self.query_model.generate_content([prompt])
@@ -3836,12 +3853,15 @@ EXPANDED QUERY:"""
             if '|' in response_text:
                 category, confidence_str = response_text.split('|', 1)
                 category = category.strip().lower()
-                confidence = float(confidence_str.strip())
+                try:
+                    confidence = float(confidence_str.strip())
+                except Exception:
+                    confidence = 0.8
                 
                 # Validate category
                 if category not in valid_categories:
                     category = 'general'
-                    confidence = 0.3
+                    confidence = 1.0 if any(g in message.lower() for g in ["hi", "hello", "hey", "thanks", "who", "what"]) else 0.5
                     
                 return {
                     'category': category,
