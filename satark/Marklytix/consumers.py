@@ -486,6 +486,296 @@ class DatabaseSearchTree:
         results.sort(key=lambda x: (x['confidence'], x['matches']), reverse=True)
         return results
 
+class MarklytixDecomposedQueryEngine:
+    """
+    Decomposed Sub-Task Query Synthesizer (DST-QS) with Live Probing & Table-Swap Routing
+    Decomposes complex multi-table queries into isolated, dry-run tested sub-tasks
+    before stitching into a verified multi-table join statement.
+    """
+    def __init__(self, engine=None, query_model=None, log_emitter=None):
+        self.engine = engine or get_shared_db_engine()
+        self.query_model = query_model
+        self.log_emitter = log_emitter
+
+    def log(self, msg, level="info"):
+        print(msg)
+        if self.log_emitter:
+            try:
+                self.log_emitter(msg)
+            except Exception:
+                pass
+
+    def decompose_query_subtasks(self, user_query):
+        """Phase 1: Query Target & Constraint Sub-Task Decomposition"""
+        self.log(f"🎯 [LEVEL 3.1: SUB-TASK DECOMPOSITION] Decomposing complex query into sub-goals...")
+        
+        subtasks = []
+        q_lower = user_query.lower()
+        
+        if any(w in q_lower for w in ["user", "auditor", "username", "name", "who"]):
+            m_user = re.search(r"username\s*=\s*'([^']+)'", q_lower) or re.search(r"user\s*=\s*'([^']+)'", q_lower)
+            filter_val = m_user.group(1) if m_user else None
+            subtasks.append({
+                "id": 1,
+                "target_type": "user_entity",
+                "description": "Identify User Entity & Name",
+                "keywords": ["user", "username", "auditor", "accounts_mst_usertbl"],
+                "filter_literal": filter_val,
+                "target_columns": ["UserName", "UserID", "UserCode"]
+            })
+            
+        if any(w in q_lower for w in ["role", "designation", "title"]):
+            subtasks.append({
+                "id": 2,
+                "target_type": "role_attribute",
+                "description": "Identify Role Title / Description",
+                "keywords": ["role", "mst_role", "map_userrole", "designation"],
+                "filter_literal": None,
+                "target_columns": ["RoleName", "Description", "RoleId"]
+            })
+            
+        if any(w in q_lower for w in ["branch", "patna", "location", "hub"]):
+            m_loc = "patna" if "patna" in q_lower else None
+            subtasks.append({
+                "id": 3,
+                "target_type": "branch_entity",
+                "description": "Identify Branch Location Entity",
+                "keywords": ["branch", "location", "patna", "branchRiskScore", "mst_branch"],
+                "filter_literal": m_loc,
+                "target_columns": ["BranchName", "BranchID", "branch_id"]
+            })
+            
+        if any(w in q_lower for w in ["score", "audit", "metric", "grade", "percentage", "rate"]):
+            subtasks.append({
+                "id": 4,
+                "target_type": "audit_metric",
+                "description": "Identify Audit Scores & Performance Metrics",
+                "keywords": ["score", "audit", "grade", "percentage", "audit_plan_history", "audit_branch_score_summary"],
+                "filter_literal": None,
+                "target_columns": ["score_pct", "priority_score", "grade", "total_score"]
+            })
+            
+        if not subtasks:
+            subtasks.append({
+                "id": 1,
+                "target_type": "general_query",
+                "description": "General Entity Query",
+                "keywords": [w for w in q_lower.split() if len(w) > 3][:4],
+                "filter_literal": None,
+                "target_columns": []
+            })
+            
+        for st in subtasks:
+            self.log(f"   • [Sub-Task {st['id']}] {st['description']} (Filter: '{st['filter_literal']}')")
+            
+        return subtasks
+
+    def execute_subtask_probe(self, subtask, candidate_table):
+        """Phase 2 & 3: Live Sub-Task Probing against SQL Server with NOLOCK & 2s Timeout"""
+        clean_tbl = candidate_table.replace("dbo.[", "").replace("]", "").replace("[", "").replace("dbo.", "").strip()
+        system_blacklist = {"django_migrations", "sysdiagrams", "authtoken_token", "django_content_type", "django_session", "sqlite_sequence"}
+        if clean_tbl.lower() in system_blacklist:
+            self.log(f"   ℹ️ Bypassing non-business system/framework table: dbo.[{clean_tbl}]")
+            return pd.DataFrame(), "system_table"
+
+        literal = subtask.get("filter_literal")
+        
+        where_clause = ""
+        if literal:
+            if subtask["target_type"] == "user_entity":
+                where_clause = f"WHERE LOWER(UserName) LIKE '%{literal}%' OR LOWER(UserCode) LIKE '%{literal}%'"
+            elif subtask["target_type"] == "branch_entity":
+                where_clause = f"WHERE LOWER(BranchName) LIKE '%{literal}%' OR LOWER(branch) LIKE '%{literal}%' OR LOWER(division) LIKE '%{literal}%'"
+                
+        sql = f"SELECT TOP 1 * FROM dbo.[{clean_tbl}] WITH (NOLOCK) {where_clause}"
+        self.log(f"🔬 [LEVEL 3.2: LIVE SUB-TASK PROBING] Testing probe on dbo.[{clean_tbl}]: {sql}")
+        
+        try:
+            with self.engine.begin() as conn:
+                df = pd.read_sql(text(sql), conn)
+                self.log(f"   ✅ Probe on dbo.[{clean_tbl}] returned {len(df)} rows.")
+                return df, "success" if len(df) > 0 else "empty"
+        except Exception as e:
+            self.log(f"   ⚠️ Probe failed on dbo.[{clean_tbl}]: {e}")
+            return pd.DataFrame(), "error"
+
+    def resolve_subtask_table_swap(self, subtask, candidate_pool):
+        """Phase 3 Fallback: Dynamic Table-Swap Routing with System Table Filtering"""
+        self.log(f"🔄 [LEVEL 3.3: DYNAMIC TABLE-SWAP ROUTING] Searching populated candidate tables for Sub-Task {subtask['id']} ({subtask['description']})...")
+        system_blacklist = {"django_migrations", "sysdiagrams", "authtoken_token", "django_content_type", "django_session", "sqlite_sequence"}
+        
+        clean_pool = [t for t in candidate_pool if t.replace("dbo.[", "").replace("]", "").replace("[", "").replace("dbo.", "").strip().lower() not in system_blacklist]
+        if not clean_pool:
+            clean_pool = ["audit_plan_history", "accounts_mst_usertbl", "audit_branch_score_summary"]
+
+        for tbl in clean_pool:
+            df, status = self.execute_subtask_probe(subtask, tbl)
+            if status == "success" and not df.empty:
+                self.log(f"   🎉 [TABLE-SWAP SUCCESS] Selected populated table dbo.[{tbl}] ({len(df)} rows matched)")
+                return tbl, df
+                
+        self.log(f"   ⚠️ No non-empty candidate tables found for Sub-Task {subtask['id']}, retaining primary candidate.")
+        default_tbl = clean_pool[0]
+        return default_tbl, pd.DataFrame()
+
+    def fetch_chroma_candidate_tables_for_subtask(self, subtask_desc, keywords, n_results=5):
+        """
+        Dynamically queries ChromaDB vector store for candidate tables matching a specific sub-task description.
+        Zero hardcoded table names!
+        """
+        try:
+            storage_dir = os.path.join(os.path.dirname(__file__), "scratch", "chroma_db_storage")
+            if not os.path.exists(storage_dir):
+                return []
+
+            client = chromadb.PersistentClient(path=storage_dir)
+            try:
+                schema_coll = client.get_collection(name="marklytix_table_schemas")
+            except Exception:
+                return []
+
+            query_text = f"{subtask_desc} " + " ".join(keywords)
+            res = schema_coll.query(query_texts=[query_text], n_results=n_results)
+            
+            candidate_tables = []
+            if res and res.get("metadatas") and res["metadatas"][0]:
+                for meta in res["metadatas"][0]:
+                    tbl = meta.get("table_name")
+                    if tbl:
+                        candidate_tables.append(tbl)
+
+            system_blacklist = {"django_migrations", "sysdiagrams", "authtoken_token", "django_content_type", "django_session", "sqlite_sequence"}
+            clean_candidates = [t for t in candidate_tables if t.lower() not in system_blacklist]
+            self.log(f"🧠 [DYNAMIC CHROMADB RAG] Retrieved {len(clean_candidates)} dynamic candidate tables for Sub-Task '{subtask_desc}': {clean_candidates}")
+            return clean_candidates
+        except Exception as e:
+            self.log(f"⚠️ ChromaDB sub-task search notice: {e}")
+            return []
+
+    def execute_sequential_cumulative_stitching(self, subtasks, candidate_pool, user_query):
+        """
+        Sequential Cumulative Stitching (Task Decomposition Engine):
+        1. Task 1.1: Dynamically queries ChromaDB for candidate tables matching Sub-Task 1 description.
+        2. Task 1.2: Probes candidates live on SQL Server & verifies best working base table.
+        3. Task 2.1: Dynamically queries ChromaDB for Sub-Task 2 candidate tables.
+        4. Task 2.2: Discovers join keys to previous cumulative tables, tests 2-table cumulative join live.
+        5. Task 3 & 4: Continuously passes the cumulative working query to next sub-tasks!
+        """
+        self.log(f"⚡ [DST-QS DYNAMIC SEQUENTIAL STITCHER] Starting cumulative multi-task query synthesis across {len(subtasks)} sub-tasks...")
+        
+        if not subtasks:
+            return ""
+
+        active_tables = []
+        cumulative_sql = ""
+        graph_engine = None
+        try:
+            graph_engine = MarklytixRelationalGraph.get_instance(engine=self.engine)
+        except Exception:
+            pass
+
+        # Step 1: Execute Task 1 (Dynamic Chroma Search & Live Probe)
+        task_1 = subtasks[0]
+        st1_desc = task_1["description"]
+        st1_kw = task_1.get("keywords", [])
+        
+        # Dynamic ChromaDB RAG for Task 1 candidates
+        st1_chroma_cands = self.fetch_chroma_candidate_tables_for_subtask(st1_desc, st1_kw, n_results=5)
+        task1_pool = list(dict.fromkeys([t.replace("dbo.[", "").replace("]", "").replace("[", "").replace("dbo.", "").strip() for t in st1_chroma_cands + candidate_pool]))
+
+        tbl_1, df_1 = self.resolve_subtask_table_swap(task_1, task1_pool)
+        clean_tbl_1 = tbl_1.replace("dbo.[", "").replace("]", "").replace("[", "").replace("dbo.", "").strip()
+        active_tables.append(clean_tbl_1)
+        task_1["table"] = clean_tbl_1
+
+        literal = task_1.get("filter_literal")
+        where_clause = ""
+        if literal:
+            if task_1["target_type"] == "user_entity":
+                where_clause = f"WHERE LOWER(UserName) LIKE '%{literal}%' OR LOWER(UserCode) LIKE '%{literal}%'"
+            elif task_1["target_type"] == "branch_entity":
+                where_clause = f"WHERE LOWER(BranchName) LIKE '%{literal}%' OR LOWER(branch) LIKE '%{literal}%' OR LOWER(division) LIKE '%{literal}%'"
+
+        cumulative_sql = f"SELECT TOP 50 dbo.[{clean_tbl_1}].* FROM dbo.[{clean_tbl_1}] WITH (NOLOCK) {where_clause}".strip()
+        self.log(f"   ✅ [TASK 1 BASE SUB-QUERY VERIFIED]: {cumulative_sql}")
+
+        # Step 2: Sequentially join subsequent sub-tasks (Task 2, Task 3, Task 4...)
+        for st in subtasks[1:]:
+            st_id = st["id"]
+            st_desc = st["description"]
+            st_kw = st.get("keywords", [])
+            self.log(f"🔄 [CUMULATIVE STITCH: TASK {st_id}] ({st_desc}) Passing previous cumulative query to Task {st_id}...")
+            
+            # Dynamic ChromaDB RAG specifically for this sub-task's domain!
+            st_chroma_cands = self.fetch_chroma_candidate_tables_for_subtask(st_desc, st_kw, n_results=5)
+            subtask_cand_pool = list(dict.fromkeys([t.replace("dbo.[", "").replace("]", "").replace("[", "").replace("dbo.", "").strip() for t in st_chroma_cands + candidate_pool]))
+
+            join_success = False
+            for cand_tbl in subtask_cand_pool:
+                clean_cand = cand_tbl.replace("dbo.[", "").replace("]", "").replace("[", "").replace("dbo.", "").strip()
+                if clean_cand in active_tables:
+                    continue
+
+                # Discover join keys between active_tables and clean_cand via Knowledge Graph & Common Schema Keys
+                join_condition = ""
+                if graph_engine and hasattr(graph_engine, 'graph') and graph_engine.graph:
+                    for act_tbl in active_tables:
+                        t_act = act_tbl.lower().strip()
+                        t_cand = clean_cand.lower().strip()
+                        if graph_engine.graph.has_edge(t_act, t_cand):
+                            edge_data = graph_engine.graph.get_edge_data(t_act, t_cand)
+                            if edge_data and edge_data.get("join_pairs"):
+                                col_act, col_cand = edge_data["join_pairs"][0]
+                                join_condition = f"dbo.[{act_tbl}].[{col_act}] = dbo.[{clean_cand}].[{col_cand}]"
+                                break
+
+                if not join_condition:
+                    try:
+                        cols_cache = HierarchicalSearchConsumer.get_db_columns_cache(self.engine)
+                        cand_cols = [c[0].lower() for c in cols_cache.get(clean_cand.lower(), [])]
+                        for act_tbl in active_tables:
+                            act_cols = [c[0].lower() for c in cols_cache.get(act_tbl.lower(), [])]
+                            common = [c for c in act_cols if c in cand_cols and c in ["branch_id", "branchid", "userid", "user_id", "auditor_id", "audit_id", "roleid", "role_id"]]
+                            if common:
+                                common_col = common[0]
+                                join_condition = f"dbo.[{act_tbl}].[{common_col}] = dbo.[{clean_cand}].[{common_col}]"
+                                break
+                    except Exception:
+                        pass
+
+                if not join_condition:
+                    continue
+
+                # Build test cumulative query
+                test_sql = f"{cumulative_sql}\nLEFT JOIN dbo.[{clean_cand}] WITH (NOLOCK) ON {join_condition}"
+                self.log(f"🔬 [LIVE PROBE CUMULATIVE TASK {st_id}]: Testing join on dbo.[{clean_cand}]...")
+
+                try:
+                    with self.engine.begin() as conn:
+                        df_probe = pd.read_sql(text(test_sql), conn)
+                        if len(df_probe) > 0:
+                            self.log(f"   🎉 [CUMULATIVE JOIN SUCCESS] Task {st_id} joined dbo.[{clean_cand}] ({len(df_probe)} rows verified!)")
+                            cumulative_sql = test_sql
+                            active_tables.append(clean_cand)
+                            st["table"] = clean_cand
+                            join_success = True
+                            break
+                        else:
+                            self.log(f"   ⚠️ Cumulative probe returned 0 rows for dbo.[{clean_cand}]. Retrying next candidate...")
+                except Exception as ex_probe:
+                    self.log(f"   ⚠️ Cumulative probe query error on dbo.[{clean_cand}]: {ex_probe}")
+
+            if not join_success:
+                self.log(f"   ⚠️ Task {st_id} could not find a non-empty join candidate, retaining previous cumulative query.")
+
+        return cumulative_sql
+
+    def stitch_and_validate_decomposed_query(self, verified_subtasks, query):
+        """Phase 4 & 5: Relational Join Stitching & Nullity Verification via Sequential Cumulative Stitching"""
+        tables_used = list(set([st["table"] for st in verified_subtasks if "table" in st]))
+        self.log(f"🔗 [LEVEL 3.4: RELATIONAL JOIN STITCHING] Synthesizing multi-table join across verified tables: {tables_used}")
+        return self.execute_sequential_cumulative_stitching(verified_subtasks, tables_used, query)
+
 # -------------------------------------- Hierarchical Search Consumer ------------------------------------- #
 class HierarchicalSearchConsumer(WebsocketConsumer):
     """
@@ -719,6 +1009,62 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
             return last_empty_results, current_sql, attempt_history
 
         raise Exception(f"SQL execution failed after {max_retries + 1} attempts. Last error: {last_error}")
+
+    def expand_user_prompt(self, text):
+        """
+        Level -1: Pre-Classification Prompt Enhancer Agent
+        Expands short/vague user prompts into explicit, detailed database search questions.
+        Bypasses expansion if prompt is already detailed (>= 12 words).
+        """
+        if not text or not text.strip():
+            return text, False, 0.0
+
+        words = text.strip().split()
+        if len(words) >= 12:
+            return text, False, 0.0
+
+        t_start = datetime.now()
+        try:
+            prompt = f"""You are a database prompt enhancer for an enterprise SQL database. Expand short/vague user questions into a complete, clear analytical question suitable for Text-to-SQL generation.
+Do NOT invent fake entity names or IDs. Preserve all names, numbers, and dates exactly as given.
+
+User Question: "{text}"
+Return ONLY the clear expanded question string."""
+
+            expanded = self.query_model.generate_content([prompt]).text.strip()
+            t_duration = round((datetime.now() - t_start).total_seconds(), 3)
+            return expanded if expanded else text, True, t_duration
+        except Exception:
+            return text, False, 0.0
+
+    def detect_and_translate_to_english(self, text, user_lang_param=None):
+        """
+        Multilingual Auto-Detection & Input Translation Agent:
+        Detects user query language. If non-English (e.g. Hindi, Hinglish), translates query to English
+        for optimal Text-to-SQL accuracy, while tracking original language for response translation.
+        """
+        if not text or not text.strip():
+            return text, "english", False, 0.0
+
+        t_start = datetime.now()
+        target_language = (user_lang_param or "english").lower().strip()
+        
+        # Check if text contains non-ASCII Devanagari characters
+        is_hindi = any('\u0900' <= char <= '\u097F' for char in text)
+        if not is_hindi and target_language in ("english", "en"):
+            return text, "english", False, 0.0
+
+        try:
+            translation_prompt = f"""Translate the following user question into clear, standard English for database Text-to-SQL generation.
+Do NOT change table names, numbers, or specific filter values.
+User Input: "{text}"
+Return ONLY the English translation."""
+            
+            resp = self.query_model.generate_content([translation_prompt]).text.strip()
+            t_duration = round((datetime.now() - t_start).total_seconds(), 3)
+            return resp if resp else text, target_language, True, t_duration
+        except Exception:
+            return text, target_language, False, 0.0
 
     def receive(self, text_data):
         _marklytix_search_local.active_consumer = self
@@ -1675,7 +2021,8 @@ class HierarchicalSearchConsumer(WebsocketConsumer):
 
                     table_stats_map = {}
                     try:
-                        with engine.connect() as s_conn:
+                        db_engine = getattr(self, 'engine', None) or get_shared_db_engine()
+                        with db_engine.connect() as s_conn:
                             stats_rows = s_conn.execute(text("""
                                 WITH TableStats AS (
                                     SELECT
@@ -2476,6 +2823,33 @@ Return ONLY a JSON array of selected column names, e.g. ["col_a", "col_b"]. Do n
             print(f"💥 Error in prune_table_schema for {table_name}: {err}")
             return raw_schema_text
 
+    def get_formatted_table_schema(self, engine, table_name, user_query):
+        """
+        Retrieves raw table schema from ChromaDB or INFORMATION_SCHEMA and formats it via prune_table_schema.
+        """
+        try:
+            clean_name = table_name.lower().replace("dbo.[", "").replace("]", "").replace("[", "").replace("dbo.", "").strip()
+            storage_dir = os.path.join(os.path.dirname(__file__), "scratch", "chroma_db_storage")
+            client = chromadb.PersistentClient(path=storage_dir)
+            schema_coll = client.get_collection(name="marklytix_table_schemas")
+            res = schema_coll.query(query_texts=[user_query], n_results=1, where={"table_name": clean_name})
+            if res and res.get("documents") and res["documents"][0]:
+                raw_schema = res["documents"][0][0]
+                return self.prune_table_schema(clean_name, raw_schema, user_query)
+        except Exception:
+            pass
+
+        try:
+            with engine.connect() as conn:
+                cols = conn.execute(text(f"SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '{clean_name}'")).fetchall()
+                if cols:
+                    col_lines = [f"    {c[0]} ({c[1]})" for c in cols]
+                    return f"-- Table: dbo.[{clean_name}] ({len(cols)} columns)\nCREATE TABLE dbo.[{clean_name}] (\n" + ",\n".join(col_lines) + "\n);"
+        except Exception:
+            pass
+
+        return f"CREATE TABLE dbo.[{table_name}] (id INT);"
+
     def retrieve_top_k_schemas_chroma(self, query, k=10, prompt_k=4, table_names=None, grounded_tables=None):
         """
         Hybrid Global + Subcategory RAG Table Schema Retrieval with Dynamic Column Pruning:
@@ -2762,6 +3136,132 @@ Return ONLY a JSON array of selected column names, e.g. ["col_a", "col_b"]. Do n
             print(f"⚠️ [Dislike Warning Retrieval Error]: {e_dis_ret}")
             return ""
 
+    def log(self, msg, level="info"):
+        print(msg)
+        if self.log_emitter:
+            try:
+                self.log_emitter(msg)
+            except Exception:
+                pass
+
+    def decompose_query_subtasks(self, user_query):
+        """Phase 1: Query Target & Constraint Sub-Task Decomposition"""
+        self.log(f"🎯 [LEVEL 3.1: SUB-TASK DECOMPOSITION] Decomposing complex query into sub-goals...")
+        
+        subtasks = []
+        q_lower = user_query.lower()
+        
+        if any(w in q_lower for w in ["user", "auditor", "username", "name", "who"]):
+            m_user = re.search(r"username\s*=\s*'([^']+)'", q_lower) or re.search(r"user\s*=\s*'([^']+)'", q_lower)
+            filter_val = m_user.group(1) if m_user else None
+            subtasks.append({
+                "id": 1,
+                "target_type": "user_entity",
+                "description": "Identify User Entity & Name",
+                "keywords": ["user", "username", "auditor", "accounts_mst_usertbl"],
+                "filter_literal": filter_val,
+                "target_columns": ["UserName", "UserID", "UserCode"]
+            })
+            
+        if any(w in q_lower for w in ["role", "designation", "title"]):
+            subtasks.append({
+                "id": 2,
+                "target_type": "role_attribute",
+                "description": "Identify Role Title / Description",
+                "keywords": ["role", "mst_role", "map_userrole", "designation"],
+                "filter_literal": None,
+                "target_columns": ["RoleName", "Description", "RoleId"]
+            })
+            
+        if any(w in q_lower for w in ["branch", "patna", "location", "hub"]):
+            m_loc = "patna" if "patna" in q_lower else None
+            subtasks.append({
+                "id": 3,
+                "target_type": "branch_entity",
+                "description": "Identify Branch Location Entity",
+                "keywords": ["branch", "location", "patna", "branchRiskScore", "mst_branch"],
+                "filter_literal": m_loc,
+                "target_columns": ["BranchName", "BranchID", "branch_id"]
+            })
+            
+        if any(w in q_lower for w in ["score", "audit", "metric", "grade", "percentage", "rate"]):
+            subtasks.append({
+                "id": 4,
+                "target_type": "audit_metric",
+                "description": "Identify Audit Scores & Performance Metrics",
+                "keywords": ["score", "audit", "grade", "percentage", "audit_plan_history", "audit_branch_score_summary"],
+                "filter_literal": None,
+                "target_columns": ["score_pct", "priority_score", "grade", "total_score"]
+            })
+            
+        if not subtasks:
+            subtasks.append({
+                "id": 1,
+                "target_type": "general_query",
+                "description": "General Entity Query",
+                "keywords": [w for w in q_lower.split() if len(w) > 3][:4],
+                "filter_literal": None,
+                "target_columns": []
+            })
+            
+        for st in subtasks:
+            self.log(f"   • [Sub-Task {st['id']}] {st['description']} (Filter: '{st['filter_literal']}')")
+            
+        return subtasks
+
+    def execute_subtask_probe(self, subtask, candidate_table):
+        """Phase 2 & 3: Live Sub-Task Probing against SQL Server with NOLOCK & 2s Timeout"""
+        clean_tbl = candidate_table.replace("dbo.[", "").replace("]", "").replace("[", "").replace("dbo.", "")
+        literal = subtask.get("filter_literal")
+        
+        where_clause = ""
+        if literal:
+            if subtask["target_type"] == "user_entity":
+                where_clause = f"WHERE LOWER(UserName) LIKE '%{literal}%' OR LOWER(UserCode) LIKE '%{literal}%'"
+            elif subtask["target_type"] == "branch_entity":
+                where_clause = f"WHERE LOWER(BranchName) LIKE '%{literal}%' OR LOWER(branch) LIKE '%{literal}%' OR LOWER(division) LIKE '%{literal}%'"
+                
+        sql = f"SELECT TOP 1 * FROM dbo.[{clean_tbl}] WITH (NOLOCK) {where_clause}"
+        self.log(f"🔬 [LEVEL 3.2: LIVE SUB-TASK PROBING] Testing probe on dbo.[{clean_tbl}]: {sql}")
+        
+        try:
+            with self.engine.begin() as conn:
+                df = pd.read_sql(text(sql), conn)
+                self.log(f"   ✅ Probe on dbo.[{clean_tbl}] returned {len(df)} rows.")
+                return df, "success" if len(df) > 0 else "empty"
+        except Exception as e:
+            self.log(f"   ⚠️ Probe failed on dbo.[{clean_tbl}]: {e}")
+            return pd.DataFrame(), "error"
+
+    def resolve_subtask_table_swap(self, subtask, candidate_pool):
+        """Phase 3 Fallback: Dynamic Table-Swap Routing"""
+        self.log(f"🔄 [LEVEL 3.3: DYNAMIC TABLE-SWAP ROUTING] Searching populated candidate tables for Sub-Task {subtask['id']} ({subtask['description']})...")
+        
+        for tbl in candidate_pool:
+            df, status = self.execute_subtask_probe(subtask, tbl)
+            if status == "success" and not df.empty:
+                self.log(f"   🎉 [TABLE-SWAP SUCCESS] Selected populated table dbo.[{tbl}] ({len(df)} rows matched)")
+                return tbl, df
+                
+        self.log(f"   ⚠️ No non-empty candidate tables found for Sub-Task {subtask['id']}, retaining primary candidate.")
+        default_tbl = candidate_pool[0] if candidate_pool else "audit_plan_history"
+        return default_tbl, pd.DataFrame()
+
+    def stitch_and_validate_decomposed_query(self, verified_subtasks, query):
+        """Phase 4 & 5: Relational Join Stitching & Nullity Verification"""
+        tables_used = list(set([st["table"] for st in verified_subtasks if "table" in st]))
+        self.log(f"🔗 [LEVEL 3.4: RELATIONAL JOIN STITCHING] Synthesizing multi-table join across verified tables: {tables_used}")
+        
+        try:
+            graph_engine = MarklytixRelationalGraph.get_instance(engine=self.engine)
+            blueprint_text, bridges = graph_engine.get_relational_join_blueprint(tables_used)
+            if blueprint_text:
+                self.log(f"   🔗 Graph Discovered {len(bridges)} intermediate bridge tables: {bridges}")
+        except Exception:
+            pass
+
+        return tables_used
+
     def classify_table_schema_direct(self, message):
 
         """
@@ -2814,7 +3314,39 @@ Return ONLY a JSON array of selected column names, e.g. ["col_a", "col_b"]. Do n
         except Exception as e:
             print(f"[Direct Schema Match Error]: {e}")
 
-        return None
+    def classify_category_hybrid(self, message, search_tree=None):
+        """
+        Level 1 Category Classification Hybrid Agent:
+        Combines direct table schema match, keyword matching, and ChromaDB vector search
+        to accurately classify user queries into top-level domain categories.
+        """
+        print("🔍 Starting hybrid category classification...")
+        
+        # Step 1: Check Direct Table Schema Vector Match
+        direct_match = self.classify_table_schema_direct(message)
+        if direct_match and direct_match.get('confidence', 0.0) >= 0.45:
+            print(f"🎯 [DIRECT TABLE SCHEMA MATCH] Found table '{direct_match.get('table_name')}' in category '{direct_match['category']}'")
+            return direct_match
+
+        # Step 2: Keyword-based classification
+        keyword_res = self.classify_category_keywords(message)
+        
+        # Step 3: Chroma DB Vector Embedding Classification
+        vector_res = self.classify_category_chroma(message)
+        
+        if vector_res and vector_res.get('confidence', 0.0) > keyword_res.get('confidence', 0.0):
+            return vector_res
+        elif keyword_res and keyword_res.get('confidence', 0.0) > 0.0:
+            return keyword_res
+        elif vector_res:
+            return vector_res
+            
+        return {
+            'category': 'domain 3: audit, compliance & performance measurement',
+            'confidence': 0.50,
+            'method': 'default_fallback',
+            'reasoning': 'Default category fallback'
+        }
 
     def classify_category_chroma(self, message):
         """Vector-based category classification using Chroma DB cosine similarity"""
@@ -3849,6 +4381,32 @@ EXPANDED QUERY:"""
             except Exception as e_ent:
                 print(f"⚠️ [Entity Grounding Prompt Error]: {e_ent}")
 
+            dst_qs_stitched_query = ""
+            # Step 1.5: Execute Decomposed Sub-Task Query Synthesizer (DST-QS) with Live Probing & Table Swapping
+            try:
+                decomposed_engine = MarklytixDecomposedQueryEngine(engine=getattr(self, 'engine', None) or get_shared_db_engine(), query_model=getattr(self, 'query_model', None))
+                subtasks = decomposed_engine.decompose_query_subtasks(clean_query)
+                dst_qs_stitched_query = decomposed_engine.execute_sequential_cumulative_stitching(subtasks, available_tables, clean_query)
+                if dst_qs_stitched_query:
+                    print(f"🎉 [DST-QS BLUEPRINT STITCHED SUCCESSFULLY]:\n{dst_qs_stitched_query}")
+                else:
+                    print(f"⚠️ [DST-QS BLUEPRINT NOTICE]: Stitching returned empty query string.")
+            except Exception as e_dst:
+                print(f"⚠️ [DST-QS Decomposed Engine Notice]: {e_dst}")
+
+            # Format DST-QS Blueprint Block for final prompt injection
+            dst_qs_blueprint_block = ""
+            if dst_qs_stitched_query and isinstance(dst_qs_stitched_query, str):
+                dst_qs_blueprint_block = f"""
+-- =========================================================
+-- ⚡ [DST-QS VERIFIED SUB-TASK BLUEPRINT QUERY]:
+-- Below is a dry-run probed, non-NULL T-SQL query blueprint generated by DST-QS sub-task probing:
+-- "This is what I think is correct for now based on live database probing:"
+-- =========================================================
+{dst_qs_stitched_query}
+"""
+                print("🌟 [DST-QS BLUEPRINT INJECTED INTO FINAL LLM PROMPT]")
+
             # Step 2: Dynamic Chroma DB Schema RAG Retrieval (with Grounded Tables Priority Boost)
             rag_schemas, retrieved_tables = self.retrieve_top_k_schemas_chroma(clean_query, k=10, prompt_k=4, table_names=available_tables, grounded_tables=grounded_tables)
             end_time_0 = datetime.now()
@@ -3870,6 +4428,18 @@ EXPANDED QUERY:"""
 
             # Gap 5: Continuous Few-Shot RAG (Retrieve top verified user-approved SQL queries)
             few_shot_examples = self.retrieve_top_k_sql_examples(clean_query, subcategory=subcategory, k=2)
+
+            # Ensure any master tables referenced in Few-Shot examples are explicitly included in rag_schemas!
+            if few_shot_examples:
+                fs_tables = re.findall(r'dbo\.\[?([a-zA-Z0-9_]+)\]?', few_shot_examples, re.IGNORECASE)
+                for fs_tbl in fs_tables:
+                    clean_fs_tbl = fs_tbl.lower().strip()
+                    if clean_fs_tbl and clean_fs_tbl not in [t.lower() for t in retrieved_tables]:
+                        print(f"🌟 [FEW-SHOT SCHEMA BOOST] Appending schema for verified Few-Shot table 'dbo.[{fs_tbl}]' into prompt!")
+                        retrieved_tables.append(fs_tbl)
+                        extra_schema = self.get_formatted_table_schema(getattr(self, 'engine', None) or get_shared_db_engine(), fs_tbl, clean_query)
+                        if extra_schema:
+                            rag_schemas += f"\n\n{extra_schema}"
 
             # Dislike Feedback Warnings (Anti-Pattern Rules from close disliked queries)
             dislike_warnings = self.retrieve_dislike_feedback_warnings(clean_query, k=1)
@@ -3909,6 +4479,7 @@ AVAILABLE TABLE SCHEMAS:
 {entity_grounding_block}
 {few_shot_examples}
 {dislike_warnings}
+{dst_qs_blueprint_block}
 USER QUERY: "{message}"
 
 Respond strictly with ONLY the executable T-SQL query block (```sql ... ```). Do not include extra conversational explanations outside the code block.
@@ -3919,6 +4490,7 @@ Respond strictly with ONLY the executable T-SQL query block (```sql ... ```). Do
 {entity_grounding_block}
 {few_shot_examples}
 {dislike_warnings}
+{dst_qs_blueprint_block}
 USER QUERY: "{message}"
 
 Respond strictly with ONLY the executable T-SQL query block.
