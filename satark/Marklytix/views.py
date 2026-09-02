@@ -720,3 +720,232 @@ def submit_query_feedback(request):
     except Exception as e:
         return JsonResponse({"success": False, "message": str(e)}, status=500)
 
+
+# ============================================================
+# Shared Chat System (Claude-style Share Links)
+# ============================================================
+
+def _ensure_shared_chats_table():
+    sql = """
+    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'Marklytix_SharedChats')
+    BEGIN
+        CREATE TABLE dbo.Marklytix_SharedChats (
+            ShareId VARCHAR(64) PRIMARY KEY,
+            ChatId INT NULL,
+            Username NVARCHAR(200) NOT NULL,
+            Title NVARCHAR(500) NULL,
+            MessagesSnapshot NVARCHAR(MAX) NOT NULL,
+            AccessLevel VARCHAR(20) NOT NULL DEFAULT 'internal',
+            IsPublic BIT NOT NULL DEFAULT 1,
+            CreatedAt DATETIME DEFAULT GETDATE(),
+            ModifiedAt DATETIME DEFAULT GETDATE()
+        );
+    END
+    ELSE
+    BEGIN
+        IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Marklytix_SharedChats') AND name = 'AccessLevel')
+        BEGIN
+            ALTER TABLE dbo.Marklytix_SharedChats ADD AccessLevel VARCHAR(20) NOT NULL DEFAULT 'internal';
+        END
+    END
+    """
+    try:
+        with connection.cursor() as c:
+            c.execute(sql)
+    except Exception as e:
+        print(f"[Marklytix_SharedChats Table Init Notice]: {e}")
+
+
+@csrf_exempt
+def create_shared_chat(request):
+    """Creates or updates a shared chat link snapshot with access level ('internal' or 'public')."""
+    if request.method != "POST":
+        return JsonResponse({"success": False, "message": "POST only"}, status=405)
+    try:
+        _ensure_shared_chats_table()
+        data = json.loads(request.body)
+        chat_id = data.get("chat_id")
+        username = data.get("username", "Anonymous")
+        title = data.get("title", "Marklytix Chat")
+        messages = data.get("messages", [])
+        access_level = data.get("access_level", "internal")  # 'internal' or 'public'
+
+        if not messages:
+            return JsonResponse({"success": False, "message": "Messages snapshot cannot be empty"}, status=400)
+
+        import uuid
+        messages_json = json.dumps(messages)
+
+        existing = None
+        if chat_id:
+            existing = _exec("SELECT ShareId, IsPublic, AccessLevel FROM dbo.Marklytix_SharedChats WHERE ChatId = %s", [chat_id], fetch="one")
+
+        if existing and existing[0]:
+            share_id = existing[0]
+            _exec(
+                "UPDATE dbo.Marklytix_SharedChats SET MessagesSnapshot = %s, Title = %s, Username = %s, AccessLevel = %s, IsPublic = 1, ModifiedAt = GETDATE() WHERE ShareId = %s",
+                [messages_json, title, username, access_level, share_id],
+                fetch=None
+            )
+        else:
+            share_id = str(uuid.uuid4())
+            _exec(
+                "INSERT INTO dbo.Marklytix_SharedChats (ShareId, ChatId, Username, Title, MessagesSnapshot, AccessLevel, IsPublic, CreatedAt, ModifiedAt) VALUES (%s, %s, %s, %s, %s, %s, 1, GETDATE(), GETDATE())",
+                [share_id, chat_id, username, title, messages_json, access_level],
+                fetch=None
+            )
+
+        return JsonResponse({
+            "success": True,
+            "share_id": share_id,
+            "title": title,
+            "access_level": access_level,
+            "is_public": True,
+            "message": f"Chat shared successfully as {access_level.upper()}"
+        })
+    except Exception as e:
+        return JsonResponse({"success": False, "message": str(e)}, status=500)
+
+
+@csrf_exempt
+def get_shared_chat(request, share_id):
+    """Fetches a shared chat snapshot by share_id."""
+    if request.method != "GET":
+        return JsonResponse({"success": False, "message": "GET only"}, status=405)
+    try:
+        _ensure_shared_chats_table()
+        row = _exec("SELECT ShareId, ChatId, Username, Title, MessagesSnapshot, IsPublic, AccessLevel, CreatedAt FROM dbo.Marklytix_SharedChats WHERE ShareId = %s", [share_id], fetch="one")
+        if not row:
+            return JsonResponse({"success": False, "message": "Shared conversation not found."}, status=404)
+
+        is_public = bool(row[5])
+        if not is_public:
+            return JsonResponse({"success": False, "message": "This shared link has been disabled by the author.", "is_private": True}, status=403)
+
+        access_level = row[6] if row[6] else "internal"
+        messages = json.loads(row[4]) if row[4] else []
+        return JsonResponse({
+            "success": True,
+            "data": {
+                "share_id": row[0],
+                "chat_id": row[1],
+                "username": row[2],
+                "title": row[3],
+                "access_level": access_level,
+                "messages": messages,
+                "created_at": row[7].isoformat() if row[7] else None
+            }
+        })
+    except Exception as e:
+        return JsonResponse({"success": False, "message": str(e)}, status=500)
+
+
+@csrf_exempt
+def revoke_shared_chat(request, share_id):
+    """Revokes / disables a shared chat link."""
+    if request.method != "POST":
+        return JsonResponse({"success": False, "message": "POST only"}, status=405)
+    try:
+        _ensure_shared_chats_table()
+        _exec("UPDATE dbo.Marklytix_SharedChats SET IsPublic = 0, ModifiedAt = GETDATE() WHERE ShareId = %s", [share_id], fetch=None)
+        return JsonResponse({"success": True, "message": "Shared link disabled."})
+    except Exception as e:
+        return JsonResponse({"success": False, "message": str(e)}, status=500)
+
+
+@csrf_exempt
+def get_shared_chat_status(request, chat_id):
+    """Checks if a chat has an active share link."""
+    if request.method != "GET":
+        return JsonResponse({"success": False, "message": "GET only"}, status=405)
+    try:
+        _ensure_shared_chats_table()
+        row = _exec("SELECT ShareId, IsPublic, Title, AccessLevel, CreatedAt FROM dbo.Marklytix_SharedChats WHERE ChatId = %s", [chat_id], fetch="one")
+        if row and row[0]:
+            return JsonResponse({
+                "success": True,
+                "has_share": True,
+                "share_id": row[0],
+                "is_public": bool(row[1]),
+                "title": row[2],
+                "access_level": row[3] if row[3] else "internal"
+            })
+        return JsonResponse({"success": True, "has_share": False})
+    except Exception as e:
+        return JsonResponse({"success": False, "message": str(e)}, status=500)
+
+
+@csrf_exempt
+def get_user_branch_context(request):
+    """
+    Fetches the distinct BranchID and UserID for the user from accounts_mst_usertbl.
+    """
+    if request.method != "GET":
+        return JsonResponse({"success": False, "message": "GET only"}, status=405)
+    try:
+        user_id = request.GET.get("user_id") or request.GET.get("userid") or request.GET.get("id")
+
+        # If not passed as query param, try decoding from JWT Authorization header
+        auth_header = request.headers.get("Authorization") or ""
+        if not user_id and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+            try:
+                import base64
+                parts = token.split(".")
+                if len(parts) == 3:
+                    padded = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
+                    payload_bytes = base64.b64decode(padded.replace("-", "+").replace("_", "/"))
+                    payload = json.loads(payload_bytes.decode("utf-8"))
+                    user_id = payload.get("user_id") or payload.get("id") or payload.get("userid")
+            except Exception:
+                pass
+
+        if not user_id:
+            return JsonResponse({"success": False, "message": "user_id is required"}, status=400)
+
+        # Query SQL Server accounts_mst_usertbl
+        row = _exec(
+            """
+            SELECT DISTINCT 
+                CAST(BranchID AS VARCHAR(50)) AS BranchID, 
+                CAST(UserID AS VARCHAR(50)) AS UserID, 
+                UserName, 
+                UserCode, 
+                CAST(DivisionID AS VARCHAR(50)) AS DivisionID, 
+                CAST(RegionID AS VARCHAR(50)) AS RegionID 
+            FROM dbo.accounts_mst_usertbl 
+            WHERE UserID = %s OR id = %s OR UserCode = %s
+            """,
+            [str(user_id), str(user_id), str(user_id)],
+            fetch="one"
+        )
+
+        if row:
+            branch_id = str(row[0]).strip() if row[0] is not None else ""
+            db_user_id = str(row[1]).strip() if row[1] is not None else str(user_id)
+            user_name = str(row[2]).strip() if row[2] is not None else ""
+            user_code = str(row[3]).strip() if row[3] is not None else ""
+            division_id = str(row[4]).strip() if row[4] is not None else ""
+            region_id = str(row[5]).strip() if row[5] is not None else ""
+
+            return JsonResponse({
+                "success": True,
+                "branch_id": branch_id,
+                "user_id": db_user_id,
+                "user_name": user_name,
+                "user_code": user_code,
+                "division_id": division_id,
+                "region_id": region_id
+            })
+        else:
+            return JsonResponse({
+                "success": True,
+                "branch_id": "",
+                "user_id": str(user_id),
+                "message": "User not found in accounts_mst_usertbl"
+            })
+    except Exception as e:
+        return JsonResponse({"success": False, "message": str(e)}, status=500)
+
+
+

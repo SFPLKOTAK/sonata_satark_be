@@ -2911,6 +2911,23 @@ Return ONLY a JSON array of selected column names, e.g. ["col_a", "col_b"]. Do n
             combined_entries = []
             seen_tables = set()
 
+            # Direct retrieval of grounded_tables (e.g. from DST-QS prober or entity grounding)
+            if grounded_tables and isinstance(grounded_tables, list) and len(grounded_tables) > 0:
+                clean_gt = [gt.lower().replace("dbo.[", "").replace("]", "").replace("[", "").replace("dbo.", "").strip() for gt in grounded_tables if str(gt).strip()]
+                if clean_gt:
+                    try:
+                        gt_query = {"table_name": {"$in": clean_gt}} if len(clean_gt) > 1 else {"table_name": clean_gt[0]}
+                        gt_res = schema_coll.get(where=gt_query)
+                        if gt_res and gt_res.get('documents'):
+                            for doc, meta in zip(gt_res['documents'], gt_res['metadatas']):
+                                tbl = meta.get('table_name', '')
+                                if tbl and tbl not in seen_tables:
+                                    seen_tables.add(tbl)
+                                    p_score = float(meta.get('priority_score', '0.90'))
+                                    combined_entries.append((tbl, doc, meta, 0.95, p_score))
+                    except Exception as e_gt:
+                        print(f"⚠️ [Grounded Table Direct Fetch Notice]: {e_gt}")
+
             for doc, meta, dist in zip(global_docs, global_metas, global_dists if global_dists else [0.5]*len(global_docs)):
                 tbl = meta.get('table_name', '')
                 if tbl and tbl not in seen_tables:
@@ -4398,6 +4415,8 @@ EXPANDED QUERY:"""
                 entity_grounding_block = entity_engine.get_grounding_prompt_block(grounding_query, candidate_tables=available_tables)
                 if entity_grounding_block:
                     print(f"🎯 [ENTITY VALUE GROUNDING] Injected verified database entity literals into prompt (scoped to candidate tables)")
+                else:
+                    print(f"ℹ️ [ENTITY VALUE GROUNDING] No specific entity names or ID literals detected in query (No grounding block needed)")
             except Exception as e_ent:
                 print(f"⚠️ [Entity Grounding Prompt Error]: {e_ent}")
 
@@ -4409,6 +4428,22 @@ EXPANDED QUERY:"""
                 dst_qs_stitched_query = decomposed_engine.execute_sequential_cumulative_stitching(subtasks, available_tables, clean_query)
                 if dst_qs_stitched_query:
                     print(f"🎉 [DST-QS BLUEPRINT STITCHED SUCCESSFULLY]:\n{dst_qs_stitched_query}")
+                    # Extract all probed tables from the DST-QS blueprint and add to grounded tables
+                    import re
+                    dst_tables = re.findall(r'dbo\.\[(.*?)\]', dst_qs_stitched_query, re.IGNORECASE)
+                    if not dst_tables:
+                        dst_tables = [t[0] or t[1] for t in re.findall(r'FROM\s+dbo\.\[?(\w+)\]?|JOIN\s+dbo\.\[?(\w+)\]?', dst_qs_stitched_query, re.IGNORECASE) if (t[0] or t[1])]
+                    
+                    if dst_tables:
+                        if not isinstance(grounded_tables, list):
+                            grounded_tables = []
+                        for dt in dst_tables:
+                            clean_dt = dt.strip().lower().replace("dbo.[", "").replace("]", "").replace("[", "").replace("dbo.", "")
+                            if clean_dt and clean_dt not in [t.lower().replace("dbo.[", "").replace("]", "").replace("[", "").replace("dbo.", "") for t in available_tables]:
+                                available_tables.append(clean_dt)
+                            if clean_dt and clean_dt not in [gt.lower().replace("dbo.[", "").replace("]", "").replace("[", "").replace("dbo.", "") for gt in grounded_tables]:
+                                grounded_tables.append(clean_dt)
+                        print(f"🎯 [DST-QS SCHEMA BOOST] Force-appended probed tables to grounded schemas: {dst_tables}")
                 else:
                     print(f"⚠️ [DST-QS BLUEPRINT NOTICE]: Stitching returned empty query string.")
             except Exception as e_dst:

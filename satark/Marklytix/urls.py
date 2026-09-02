@@ -37,4 +37,13 @@ urlpatterns = [
 
     # Gap 5: Automated Feedback Loop & Continuous RAG Indexing
     path("api/feedback/", views.submit_query_feedback, name="marklytix_submit_feedback"),
+
+    # Shared Chat Endpoints (Claude-style Share Modal)
+    path("api/share/create/", views.create_shared_chat, name="marklytix_create_shared_chat"),
+    path("api/share/<str:share_id>/", views.get_shared_chat, name="marklytix_get_shared_chat"),
+    path("api/share/<str:share_id>/revoke/", views.revoke_shared_chat, name="marklytix_revoke_shared_chat"),
+    path("api/share/status/<int:chat_id>/", views.get_shared_chat_status, name="marklytix_get_shared_status"),
+
+    # User Branch & Context Fetching (for Prahari / Marklytix AI Chatbots)
+    path("api/user-branch-context/", views.get_user_branch_context, name="marklytix_user_branch_context"),
 ]

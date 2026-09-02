@@ -29,11 +29,15 @@ from .views import (
     # Auditee
     get_auditee_dashboard, get_auditee_audits, get_auditee_caps,
     get_compliance_tickets, send_ticket_alert, resolve_ticket, initiate_ticket_call,
-    submit_ticket_response, view_ticket_response_file, get_branch_ml_risk_predictions, get_branch_past_audits_trend
+    submit_ticket_response, view_ticket_response_file, get_branch_ml_risk_predictions, get_branch_past_audits_trend,
+    get_center_progress, get_client_progress
 )
 
 urlpatterns = [
     path('auditor-dashboard/', get_auditor_dashboard, name='get_auditor_dashboard'),
+    # Center & Client Progress from SP dbo.usp_AuditCenterProgress
+    path('center-progress/', get_center_progress, name='get_center_progress'),
+    path('client-progress/', get_client_progress, name='get_client_progress'),
     # Branch Audit Checklist routes
     path('checklists/', get_checklist_points, name='get_checklist_points'),
     path('checklists/create/', create_checklist_point, name='create_checklist_point'),

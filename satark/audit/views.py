@@ -1376,3 +1376,111 @@ def get_branch_past_audits_trend(request):
 
     except Exception as e:
         return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def get_center_progress(request):
+    """
+    Calls dbo.usp_AuditCenterProgress to fetch completed, in-progress and total centers/clients for an audit.
+    Supports ?task=client or ?task=center (default: center progress data).
+    """
+    if request.method not in ['GET', 'POST']:
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    audit_id = request.GET.get('audit_id')
+    task_param = request.GET.get('task') or request.GET.get('type', '')
+
+    if not audit_id and request.method == 'POST':
+        try:
+            body = json.loads(request.body)
+            audit_id = body.get('audit_id') or body.get('auditId')
+            task_param = body.get('task') or body.get('type', task_param)
+        except Exception:
+            pass
+
+    if not audit_id:
+        return JsonResponse({'success': False, 'message': 'audit_id is required'}, status=400)
+
+    is_client = task_param.lower() in ['client', 'client progress data', 'clients', 'customer', 'customers']
+    sp_task = 'client progress data' if is_client else 'center progress data'
+
+    try:
+        from django.db import connection
+        with connection.cursor() as cursor:
+            cursor.execute("EXEC dbo.usp_AuditCenterProgress @audit_id=%s, @task=%s", [audit_id, sp_task])
+
+            # Result set 1: Completed centers/clients
+            completed_rows = cursor.fetchall()
+            completed_items = [{'name': r[0], 'id': str(r[1]), 'client_name': r[0], 'client_id': str(r[1]), 'center_name': r[0], 'center_id': str(r[1])} for r in completed_rows if r[1] is not None]
+
+            # Result set 1.1: Total completed count
+            cursor.nextset()
+            completed_count_row = cursor.fetchone()
+            total_completed = completed_count_row[0] if completed_count_row else len(completed_items)
+
+            # Result set 2: In-progress centers/clients
+            cursor.nextset()
+            in_progress_rows = cursor.fetchall()
+            in_progress_items = [{'name': r[0], 'id': str(r[1]), 'client_name': r[0], 'client_id': str(r[1]), 'center_name': r[0], 'center_id': str(r[1]), 'points_filled': r[2]} for r in in_progress_rows if r[1] is not None]
+
+            # Result set 2.1: Total in progress count
+            cursor.nextset()
+            in_progress_count_row = cursor.fetchone()
+            total_in_progress = in_progress_count_row[0] if in_progress_count_row else len(in_progress_items)
+
+            # Result set 3: Not-started centers/clients
+            not_started_items = []
+            total_not_started = 0
+            if cursor.nextset():
+                not_started_rows = cursor.fetchall()
+                total_not_started = len(not_started_rows)
+                not_started_items = [{'name': r[0], 'id': str(r[1]), 'client_name': r[0], 'client_id': str(r[1]), 'center_name': r[0], 'center_id': str(r[1])} for r in not_started_rows[:300] if r[1] is not None]
+
+            total_started = total_completed + total_in_progress
+            total_items = total_completed + total_in_progress + total_not_started
+
+            if is_client:
+                return JsonResponse({
+                    'success': True,
+                    'audit_id': audit_id,
+                    'type': 'client',
+                    'total_completed': total_completed,
+                    'completed_clients': completed_items,
+                    'total_in_progress': total_in_progress,
+                    'in_progress_clients': in_progress_items,
+                    'total_not_started': total_not_started,
+                    'not_started_clients': not_started_items,
+                    'total_started': total_started,
+                    'total_clients': total_items,
+                    'total_centers': total_items
+                })
+
+            return JsonResponse({
+                'success': True,
+                'audit_id': audit_id,
+                'type': 'center',
+                'total_completed': total_completed,
+                'completed_centers': completed_items,
+                'total_in_progress': total_in_progress,
+                'in_progress_centers': in_progress_items,
+                'total_not_started': total_not_started,
+                'not_started_centers': not_started_items,
+                'total_started': total_started,
+                'total_centers': total_items
+            })
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': f'Error fetching progress: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def get_client_progress(request):
+    """
+    Alias endpoint for client progress data.
+    """
+    if request.method not in ['GET', 'POST']:
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+    
+    if request.method == 'GET':
+        request.GET = request.GET.copy()
+        request.GET['task'] = 'client'
+    return get_center_progress(request)
