@@ -896,53 +896,54 @@ def get_user_branch_context(request):
                     padded = parts[1] + "=" * ((4 - len(parts[1]) % 4) % 4)
                     payload_bytes = base64.b64decode(padded.replace("-", "+").replace("_", "/"))
                     payload = json.loads(payload_bytes.decode("utf-8"))
-                    user_id = payload.get("user_id") or payload.get("id") or payload.get("userid")
+                    user_id = payload.get("user_id") or payload.get("empid") or payload.get("user_id") or payload.get("userid") or payload.get("usercode") or payload.get("UserCode") or payload.get("id")
+                    print("testing user_id", user_id)
             except Exception:
                 pass
 
         if not user_id:
             return JsonResponse({"success": False, "message": "user_id is required"}, status=400)
 
+        print("final user_id", user_id)
+
         # Query SQL Server accounts_mst_usertbl
-        row = _exec(
+        rows = _exec(
             """
             SELECT DISTINCT 
                 CAST(BranchID AS VARCHAR(50)) AS BranchID, 
-                CAST(UserID AS VARCHAR(50)) AS UserID, 
-                UserName, 
-                UserCode, 
-                CAST(DivisionID AS VARCHAR(50)) AS DivisionID, 
-                CAST(RegionID AS VARCHAR(50)) AS RegionID 
-            FROM dbo.accounts_mst_usertbl 
-            WHERE UserID = %s OR id = %s OR UserCode = %s
+                CAST(DivisionID AS VARCHAR(50)) AS DivisionID
+            FROM VW_Branch_To_GeographicalHierarchy vgh 
+            WHERE DivisionID in (
+                SELECT DivisionID 
+                FROM accounts_mst_usertbl 
+                WHERE UserID = %s 
+            )
             """,
-            [str(user_id), str(user_id), str(user_id)],
-            fetch="one"
+            [str(user_id)],
+            fetch="all"
         )
 
-        if row:
-            branch_id = str(row[0]).strip() if row[0] is not None else ""
-            db_user_id = str(row[1]).strip() if row[1] is not None else str(user_id)
-            user_name = str(row[2]).strip() if row[2] is not None else ""
-            user_code = str(row[3]).strip() if row[3] is not None else ""
-            division_id = str(row[4]).strip() if row[4] is not None else ""
-            region_id = str(row[5]).strip() if row[5] is not None else ""
+        if rows:
+            branch_ids = list(dict.fromkeys([str(r.get("BranchID")).strip() for r in rows if r.get("BranchID") is not None and str(r.get("BranchID")).strip()]))
+            division_ids = list(dict.fromkeys([str(r.get("DivisionID")).strip() for r in rows if r.get("DivisionID") is not None and str(r.get("DivisionID")).strip()]))
 
             return JsonResponse({
                 "success": True,
-                "branch_id": branch_id,
-                "user_id": db_user_id,
-                "user_name": user_name,
-                "user_code": user_code,
-                "division_id": division_id,
-                "region_id": region_id
+                "user_id": str(user_id),
+                "branch_ids": branch_ids,
+                "division_ids": division_ids,
+                "branch_id": ", ".join(branch_ids),
+                "division_id": ", ".join(division_ids)
             })
         else:
             return JsonResponse({
                 "success": True,
                 "branch_id": "",
+                "division_id": "",
+                "branch_ids": [],
+                "division_ids": [],
                 "user_id": str(user_id),
-                "message": "User not found in accounts_mst_usertbl"
+                "message": "User not found or no division context"
             })
     except Exception as e:
         return JsonResponse({"success": False, "message": str(e)}, status=500)

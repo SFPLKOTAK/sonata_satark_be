@@ -272,6 +272,10 @@ sonata_satark_be/satark/Marklytix/
 │   ├── retrieve_top_k_schemas_chroma()         # Level 0 Vitality RAG Fetcher
 │   ├── classify_category_hybrid()              # Level 1 Category Classifier
 │   ├── classify_subcategory_hybrid()           # Level 2 Subcategory Router
+│   ├── MarklytixDecomposedQueryEngine          # Level 3 DST-QS Engine
+│   │   ├── fetch_chroma_candidate_tables_for_subtask() # Dynamic Per-Subtask Chroma RAG
+│   │   ├── execute_subtask_probe()             # Live DB Probing with System Table Blacklist
+│   │   └── execute_sequential_cumulative_stitching() # Sequential Multi-Task Join Chain
 │   ├── prune_table_schema()                    # Approach C Dynamic Column Pruner (Gap 2)
 │   ├── retrieve_top_k_sql_examples()           # Few-Shot SQL Vector RAG with Adaptive Thresholds (Gap 3)
 │   ├── execute_sql_with_self_correction()      # Level 4/5 Recursive SQL Self-Correction Loop (Gap 4)

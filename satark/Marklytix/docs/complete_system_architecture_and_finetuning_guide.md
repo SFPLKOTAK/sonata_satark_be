@@ -36,7 +36,7 @@ This document provides a complete, highly detailed explanation of the **Marklyti
 
 ### Why Prompt Blocks Inject Conditionally
 
-In [`consumers.py`](file:///c:/sonata%20satark/sonata_satark_be/satark/Marklytix/consumers.py#L3860-L3889), the final prompt sent to the LLM is constructed using 5 specialized context blocks:
+In [`consumers.py`](file:///c:/sonata%20satark/sonata_satark_be/satark/Marklytix/consumers.py#L4460-L4490), the final prompt sent to the LLM is constructed using 6 specialized context blocks:
 
 ```python
 AVAILABLE TABLE SCHEMAS:
@@ -45,6 +45,7 @@ AVAILABLE TABLE SCHEMAS:
 {entity_grounding_block}  # 3. XiYan-SQL Entity Value Grounding & Literals
 {few_shot_examples}       # 4. Verified Few-Shot T-SQL Query Examples
 {dislike_warnings}        # 5. User Dislike Anti-Pattern Warnings
+{dst_qs_blueprint_block}  # 6. DST-QS Live Probed Multi-Table Blueprint Query
 USER QUERY: "{message}"
 ```
 
