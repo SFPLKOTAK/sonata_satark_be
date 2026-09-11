@@ -526,6 +526,106 @@ class GetBranchOverviewQueryHandler(QueryHandler):
             raise e
 
 
+class GetBranchNtbNtcCountsQuery(Query):
+    def __init__(self, branch_name: str = None, branch_id: str = None, as_on_date: str = None):
+        self.branch_name = branch_name or str(branch_id or '')
+        self.branch_id = branch_id
+        self.as_on_date = as_on_date or '2026-06-08'
+
+
+class GetBranchNtbNtcCountsQueryHandler(QueryHandler):
+    def execute(self, query: GetBranchNtbNtcCountsQuery) -> dict:
+        branch_name = query.branch_name
+        as_on_date = query.as_on_date
+        try:
+            results = []
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    EXEC SP_GetBranchOverview @BranchName = %s, @AsOnDate = %s, @ReportType = 'NTB/NTC COUNTS'
+                """, [branch_name, as_on_date])
+                raw_cols = [col[0] for col in cursor.description] if cursor.description else []
+                cols = []
+                seen = {}
+                for i, c in enumerate(raw_cols):
+                    name = c.strip() if c and c.strip() else (f'type' if i == 0 else f'count' if i == 1 else f'col_{i}')
+                    if name in seen:
+                        seen[name] += 1
+                        name = f"{name}_{seen[name]}"
+                    else:
+                        seen[name] = 0
+                    cols.append(name)
+
+                rows = cursor.fetchall()
+                for row in rows:
+                    row_dict = dict(zip(cols, row))
+                    for key, val in row_dict.items():
+                        if isinstance(val, decimal.Decimal):
+                            row_dict[key] = float(val)
+                        elif hasattr(val, 'isoformat'):
+                            row_dict[key] = val.isoformat()
+                    results.append(row_dict)
+
+            return {'success': True, 'counts': results}
+        except Exception as e:
+            log_error(f"GetBranchNtbNtcCountsQueryHandler failed: {str(e)}")
+            raise e
+
+
+class GetBranchNtbNtcDataQuery(Query):
+    def __init__(self, branch_name: str = None, branch_id: str = None, as_on_date: str = None):
+        self.branch_name = branch_name or str(branch_id or '')
+        self.branch_id = branch_id
+        self.as_on_date = as_on_date or '2026-06-08'
+
+
+class GetBranchNtbNtcDataQueryHandler(QueryHandler):
+    def execute(self, query: GetBranchNtbNtcDataQuery) -> dict:
+        branch_name = query.branch_name
+        as_on_date = query.as_on_date
+        try:
+            results = []
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    EXEC SP_GetBranchOverview @BranchName = %s, @AsOnDate = %s, @ReportType = 'NTB/NTC DATA'
+                """, [branch_name, as_on_date])
+                raw_cols = [col[0] for col in cursor.description] if cursor.description else []
+                cols = []
+                seen = {}
+                for i, c in enumerate(raw_cols):
+                    name = c.strip() if c and c.strip() else (f'type' if i == 0 else f'col_{i}')
+                    if name in seen:
+                        seen[name] += 1
+                        name = f"{name}_{seen[name]}"
+                    else:
+                        seen[name] = 0
+                    cols.append(name)
+
+                rows = cursor.fetchall()
+                print(f"[NTB/NTC DATA] Branch: {branch_name}, Date: {as_on_date}, Total rows fetched: {len(rows)}")
+                print(f"[NTB/NTC DATA] Columns: {cols}")
+                if rows:
+                    print(f"[NTB/NTC DATA] First raw row: {rows[0]}")
+
+                for row in rows:
+                    row_dict = dict(zip(cols, row))
+                    for key, val in row_dict.items():
+                        if isinstance(val, decimal.Decimal):
+                            row_dict[key] = float(val)
+                        elif hasattr(val, 'isoformat'):
+                            row_dict[key] = val.isoformat()
+                    results.append(row_dict)
+
+                if results:
+                    print(f"[NTB/NTC DATA] First processed row: {results[0]}")
+
+            return {'success': True, 'data': results}
+        except Exception as e:
+            log_error(f"GetBranchNtbNtcDataQueryHandler failed: {str(e)}")
+            print(f"[NTB/NTC DATA ERROR]: {str(e)}")
+            raise e
+
+
+
 class GetCustomerRiskDetailsQuery(Query):
     def __init__(self, center_id: str, as_on_date=None):
         self.center_id = center_id
@@ -590,6 +690,172 @@ class GetCenterDisbursementsQueryHandler(QueryHandler):
         except Exception as e:
             log_error(f"GetCenterDisbursementsQueryHandler failed: {str(e)}")
             raise e
+
+
+class GetCenterStaffHandoverQuery(Query):
+    def __init__(self, center_id: str = None, center_ids: list = None, as_on_date=None):
+        self.center_id = center_id
+        self.center_ids = center_ids or ([center_id] if center_id else [])
+        self.as_on_date = as_on_date
+
+
+class GetCenterStaffHandoverQueryHandler(QueryHandler):
+    def execute(self, query: GetCenterStaffHandoverQuery) -> dict:
+        center_id = query.center_id
+        center_ids = query.center_ids or ([center_id] if center_id else [])
+        as_on_date = query.as_on_date or '2026-06-08'
+        try:
+            results_by_center = {}
+            all_records = []
+            
+            with connection.cursor() as cursor:
+                for cid in center_ids:
+                    if not cid: continue
+                    cursor.execute("""
+                        EXEC SP_GetCenterOverview @CenterID = %s, @AsOnDate = %s, @ReportType = 'STAFF_HANDOVER_REPORT'
+                    """, [cid, as_on_date])
+                    cols = [col[0] for col in cursor.description] if cursor.description else []
+                    rows = cursor.fetchall()
+
+                    c_records = []
+                    seen_handover_keys = set()
+
+                    for row in rows:
+                        row_raw = dict(zip(cols, row))
+                        # Normalize keys to lowercase for foolproof access
+                        norm = {k.lower(): v for k, v in row_raw.items()}
+
+                        staff_id = norm.get('staffid')
+                        branch_id = norm.get('branchid')
+                        handover_emp_id = norm.get('handoverempid')
+                        center_id_val = norm.get('centerid') or cid
+                        handover_dt_val = norm.get('handoverdate')
+                        note = norm.get('handovernote') or ''
+                        is_handover = norm.get('ishandover') or 'C'
+                        days_active = norm.get('days_active')
+                        handover_emp_name = norm.get('handover_empname')
+                        
+                        # Deduplicate by core handover attributes
+                        dt_iso = handover_dt_val.isoformat() if hasattr(handover_dt_val, 'isoformat') else str(handover_dt_val or '')
+                        dedup_key = (staff_id, branch_id, handover_emp_id,days_active,handover_emp_name, str(center_id_val), dt_iso)
+                        if dedup_key in seen_handover_keys:
+                            continue
+                        seen_handover_keys.add(dedup_key)
+
+                        cleaned_rec = {
+                            'StaffId': staff_id,
+                            'BranchID': branch_id,
+                            'handoverempid': handover_emp_id,
+                            'centerid': center_id_val,
+                            'handoverdate': dt_iso,
+                            'HandOverNote': note,
+                            'IsHandover': is_handover,
+                            'days_active': days_active,
+                            'handover_emp_name': handover_emp_name
+                        }
+                        c_records.append(cleaned_rec)
+
+                    def parse_date(rec):
+                        dt_str = rec.get('handoverdate') or ''
+                        try:
+                            return datetime.fromisoformat(str(dt_str).replace('Z', ''))
+                        except Exception:
+                            return datetime.min
+
+                    sorted_c_records = sorted(c_records, key=parse_date, reverse=True)
+                    all_records.extend(sorted_c_records)
+
+                    c_staff = None
+                    if sorted_c_records:
+                        latest = sorted_c_records[0]
+                        handover_dt_raw = latest.get('handoverdate')
+
+                        try:
+                            parsed_target = datetime.strptime(str(as_on_date)[:10], '%Y-%m-%d')
+                            target_dt = max(parsed_target, datetime.now())
+                        except Exception:
+                            target_dt = datetime.now()
+
+                        try:
+                            if isinstance(handover_dt_raw, str):
+                                h_dt = datetime.fromisoformat(handover_dt_raw[:19])
+                            elif isinstance(handover_dt_raw, (date, datetime)):
+                                h_dt = datetime(handover_dt_raw.year, handover_dt_raw.month, handover_dt_raw.day)
+                            else:
+                                h_dt = None
+                        except Exception:
+                            h_dt = None
+
+                        if h_dt and target_dt >= h_dt:
+                            total_days = (target_dt - h_dt).days
+                            years = target_dt.year - h_dt.year
+                            months = target_dt.month - h_dt.month
+                            days = target_dt.day - h_dt.day
+
+                            if days < 0:
+                                months -= 1
+                                days += 30
+
+                            if months < 0:
+                                years -= 1
+                                months += 12
+
+                            parts = []
+                            if years > 0:
+                                parts.append(f"{years} Year{'s' if years != 1 else ''}")
+                            if months > 0:
+                                parts.append(f"{months} Month{'s' if months != 1 else ''}")
+                            parts.append(f"{max(0, days)} Day{'s' if days != 1 else ''}")
+                            formatted_duration = ", ".join(parts) if parts else "0 Days"
+
+                            c_staff = {
+                                'staff_id': latest.get('StaffId'),
+                                'branch_id': latest.get('BranchID'),
+                                'handover_emp_id': latest.get('handoverempid'),
+                                'center_id': latest.get('centerid') or cid,
+                                'handover_date': str(handover_dt_raw),
+                                'duration_years': max(0, years),
+                                'duration_months': max(0, months),
+                                'duration_days': max(0, days),
+                                'total_days': total_days,
+                                'formatted_duration': formatted_duration,
+                                'days_active': days_active,
+                                'handover_emp_name': latest.get('handover_emp_name')
+                            }
+                        else:
+                            c_staff = {
+                                'staff_id': latest.get('StaffId'),
+                                'branch_id': latest.get('BranchID'),
+                                'handover_emp_id': latest.get('handoverempid'),
+                                'center_id': latest.get('centerid') or cid,
+                                'handover_date': str(handover_dt_raw),
+                                'duration_years': 0,
+                                'duration_months': 0,
+                                'duration_days': 0,
+                                'total_days': 0,
+                                'formatted_duration': '0 Days',
+                                'days_active': days_active,
+                                'handover_emp_name': latest.get('handover_emp_name')
+                            }
+
+                    results_by_center[str(cid)] = {
+                        'handover_records': sorted_c_records,
+                        'current_staff': c_staff,
+                        'total_handovers': len(sorted_c_records)
+                    }
+
+            single_result = results_by_center.get(str(center_id)) if center_id else None
+            return {
+                'success': True,
+                'handover_records': single_result['handover_records'] if single_result else all_records,
+                'current_staff': single_result['current_staff'] if single_result else None,
+                'total_handovers': single_result['total_handovers'] if single_result else len(all_records),
+                'centers_data': results_by_center
+            }
+        except Exception as e:
+            log_error(f"GetCenterStaffHandoverQueryHandler failed: {str(e)}")
+            raise e
+
 
 
 class GetCenterAuditFeedbackQuery(Query):

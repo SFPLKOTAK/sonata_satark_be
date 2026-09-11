@@ -36,8 +36,11 @@ from .queries import (
     ViewFeedbackFileQuery, ViewFeedbackFileQueryHandler,
     GetCenterRiskDetailsQuery, GetCenterRiskDetailsQueryHandler,
     GetBranchOverviewQuery, GetBranchOverviewQueryHandler,
+    GetBranchNtbNtcCountsQuery, GetBranchNtbNtcCountsQueryHandler,
+    GetBranchNtbNtcDataQuery, GetBranchNtbNtcDataQueryHandler,
     GetCustomerRiskDetailsQuery, GetCustomerRiskDetailsQueryHandler,
     GetCenterDisbursementsQuery, GetCenterDisbursementsQueryHandler,
+    GetCenterStaffHandoverQuery, GetCenterStaffHandoverQueryHandler,
     GetCenterAuditFeedbackQuery, GetCenterAuditFeedbackQueryHandler,
     ViewCenterFeedbackFileQuery, ViewCenterFeedbackFileQueryHandler,
     GetClientAuditFeedbackQuery, GetClientAuditFeedbackQueryHandler,
@@ -84,8 +87,11 @@ dispatcher.register_query(GetAuditFeedbackQuery, GetAuditFeedbackQueryHandler())
 dispatcher.register_query(ViewFeedbackFileQuery, ViewFeedbackFileQueryHandler())
 dispatcher.register_query(GetCenterRiskDetailsQuery, GetCenterRiskDetailsQueryHandler())
 dispatcher.register_query(GetBranchOverviewQuery, GetBranchOverviewQueryHandler())
+dispatcher.register_query(GetBranchNtbNtcCountsQuery, GetBranchNtbNtcCountsQueryHandler())
+dispatcher.register_query(GetBranchNtbNtcDataQuery, GetBranchNtbNtcDataQueryHandler())
 dispatcher.register_query(GetCustomerRiskDetailsQuery, GetCustomerRiskDetailsQueryHandler())
 dispatcher.register_query(GetCenterDisbursementsQuery, GetCenterDisbursementsQueryHandler())
+dispatcher.register_query(GetCenterStaffHandoverQuery, GetCenterStaffHandoverQueryHandler())
 dispatcher.register_query(GetCenterAuditFeedbackQuery, GetCenterAuditFeedbackQueryHandler())
 dispatcher.register_query(ViewCenterFeedbackFileQuery, ViewCenterFeedbackFileQueryHandler())
 dispatcher.register_query(GetClientAuditFeedbackQuery, GetClientAuditFeedbackQueryHandler())
@@ -462,6 +468,46 @@ def get_branch_overview(request):
 
 
 @csrf_exempt
+def get_branch_ntb_ntc_counts(request):
+    data, error_resp = parse_post_payload(request, "get_branch_ntb_ntc_counts")
+    if error_resp: return error_resp
+    user, error_resp = validate_user_view(data.get('token', ''))
+    if error_resp: return error_resp
+
+    branch_name = data.get('branch_name') or data.get('branch_id')
+    as_on_date = data.get('as_on_date')
+    if not branch_name:
+        return JsonResponse({'success': False, 'message': 'branch_name or branch_id is required'}, status=400)
+
+    try:
+        query = GetBranchNtbNtcCountsQuery(branch_name=str(branch_name), branch_id=data.get('branch_id'), as_on_date=as_on_date)
+        result = dispatcher.query(query)
+        return JsonResponse(result)
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def get_branch_ntb_ntc_data(request):
+    data, error_resp = parse_post_payload(request, "get_branch_ntb_ntc_data")
+    if error_resp: return error_resp
+    user, error_resp = validate_user_view(data.get('token', ''))
+    if error_resp: return error_resp
+
+    branch_name = data.get('branch_name') or data.get('branch_id')
+    as_on_date = data.get('as_on_date')
+    if not branch_name:
+        return JsonResponse({'success': False, 'message': 'branch_name or branch_id is required'}, status=400)
+
+    try:
+        query = GetBranchNtbNtcDataQuery(branch_name=str(branch_name), branch_id=data.get('branch_id'), as_on_date=as_on_date)
+        result = dispatcher.query(query)
+        return JsonResponse(result)
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
 def get_customer_risk_details(request):
     data, error_resp = parse_post_payload(request, "get_customer_risk_details")
     if error_resp: return error_resp
@@ -493,6 +539,30 @@ def get_center_disbursements(request):
 
     try:
         query = GetCenterDisbursementsQuery(center_id=center_id, as_on_date=data.get('as_on_date'))
+        result = dispatcher.query(query)
+        return JsonResponse(result)
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def get_center_staff_handover(request):
+    data, error_resp = parse_post_payload(request, "get_center_staff_handover")
+    if error_resp: return error_resp
+    user, error_resp = validate_user_view(data.get('token', ''))
+    if error_resp: return error_resp
+
+    center_id = data.get('center_id')
+    center_ids = data.get('center_ids')
+    if not center_id and not center_ids:
+        return JsonResponse({'success': False, 'message': 'center_id or center_ids is required'}, status=400)
+
+    try:
+        query = GetCenterStaffHandoverQuery(
+            center_id=center_id,
+            center_ids=center_ids,
+            as_on_date=data.get('as_on_date')
+        )
         result = dispatcher.query(query)
         return JsonResponse(result)
     except Exception as e:

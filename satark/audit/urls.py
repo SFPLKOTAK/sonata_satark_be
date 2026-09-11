@@ -16,7 +16,8 @@ from .views import (
     get_center_checklist_points, save_center_checklist_point,
     get_client_checklist_points, save_client_checklist_point,
     view_feedback_file, archive_feedback_file,
-    get_center_risk_details, get_branch_overview, get_customer_risk_details, get_center_disbursements,
+    get_center_risk_details, get_branch_overview, get_branch_ntb_ntc_counts, get_branch_ntb_ntc_data, get_customer_risk_details, get_center_disbursements,
+    get_center_staff_handover,
     get_center_audit_feedback, save_center_audit_feedback,
     view_center_feedback_file, archive_center_feedback_file,
     get_client_audit_feedback, save_client_audit_feedback,
@@ -75,8 +76,13 @@ urlpatterns = [
     # Center Disbursements route
     path('centers/disbursements/', get_center_disbursements, name='get_center_disbursements'),
 
+    # Center Staff Handover route
+    path('centers/staff-handover/', get_center_staff_handover, name='get_center_staff_handover'),
+
     # Branch Overview route
     path('branch/overview/', get_branch_overview, name='get_branch_overview'),
+    path('branch/ntb-ntc-counts/', get_branch_ntb_ntc_counts, name='get_branch_ntb_ntc_counts'),
+    path('branch/ntb-ntc-data/', get_branch_ntb_ntc_data, name='get_branch_ntb_ntc_data'),
     path('branch/ml-risk-predictions/', get_branch_ml_risk_predictions, name='get_branch_ml_risk_predictions'),
     path('branch/past-audits-trend/', get_branch_past_audits_trend, name='get_branch_past_audits_trend'),
 
