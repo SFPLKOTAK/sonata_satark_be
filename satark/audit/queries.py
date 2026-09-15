@@ -625,6 +625,62 @@ class GetBranchNtbNtcDataQueryHandler(QueryHandler):
             raise e
 
 
+class GetBranchDeathDataQuery(Query):
+    def __init__(self, branch_name: str = None, branch_id: str = None, as_on_date: str = None):
+        self.branch_name = branch_name or str(branch_id or '')
+        self.branch_id = branch_id
+        self.as_on_date = as_on_date or '2026-06-08'
+
+
+class GetBranchDeathDataQueryHandler(QueryHandler):
+    def execute(self, query: GetBranchDeathDataQuery) -> dict:
+        branch_name = query.branch_name
+        as_on_date = query.as_on_date
+        try:
+            results = []
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    EXEC SP_GetBranchOverview @BranchName = %s, @AsOnDate = %s, @ReportType = 'DEATH_DATA'
+                """, [branch_name, as_on_date])
+                raw_cols = [col[0] for col in cursor.description] if cursor.description else []
+                cols = []
+                seen = {}
+                for i, c in enumerate(raw_cols):
+                    name = c.strip() if c and c.strip() else (f'type' if i == 0 else f'col_{i}')
+                    if name in seen:
+                        seen[name] += 1
+                        name = f"{name}_{seen[name]}"
+                    else:
+                        seen[name] = 0
+                    cols.append(name)
+
+                rows = cursor.fetchall()
+                print(f"[DEATH DATA] Branch: {branch_name}, Date: {as_on_date}, Total rows fetched: {len(rows)}")
+                print(f"[DEATH DATA] Columns: {cols}")
+                if rows:
+                    print(f"[DEATH DATA] First raw row: {rows[0]}")
+
+                for row in rows:
+                    row_dict = dict(zip(cols, row))
+                    for key, val in row_dict.items():
+                        if isinstance(val, decimal.Decimal):
+                            row_dict[key] = float(val)
+                        elif hasattr(val, 'isoformat'):
+                            row_dict[key] = val.isoformat()
+                    results.append(row_dict)
+
+                if results:
+                    print(f"[DEATH DATA] First processed row: {results[0]}")
+
+            return {'success': True, 'data': results}
+        except Exception as e:
+            log_error(f"GetBranchDeathDataQueryHandler failed: {str(e)}")
+            print(f"[DEATH DATA ERROR]: {str(e)}")
+            raise e
+
+
+
+
 
 class GetCustomerRiskDetailsQuery(Query):
     def __init__(self, center_id: str, as_on_date=None):
