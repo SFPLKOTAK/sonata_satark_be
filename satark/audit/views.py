@@ -41,6 +41,7 @@ from .queries import (
     GetBranchDeathDataQuery, GetBranchDeathDataQueryHandler,
     GetBranchSameMobileDataQuery, GetBranchSameMobileDataQueryHandler,
     GetBranchSameAadhaarDataQuery, GetBranchSameAadhaarDataQueryHandler,
+    GetBranchSameAddressDataQuery, GetBranchSameAddressDataQueryHandler,
     GetCustomerRiskDetailsQuery, GetCustomerRiskDetailsQueryHandler,
     GetCenterDisbursementsQuery, GetCenterDisbursementsQueryHandler,
     GetCenterStaffHandoverQuery, GetCenterStaffHandoverQueryHandler,
@@ -95,6 +96,7 @@ dispatcher.register_query(GetBranchNtbNtcDataQuery, GetBranchNtbNtcDataQueryHand
 dispatcher.register_query(GetBranchDeathDataQuery, GetBranchDeathDataQueryHandler())
 dispatcher.register_query(GetBranchSameMobileDataQuery, GetBranchSameMobileDataQueryHandler())
 dispatcher.register_query(GetBranchSameAadhaarDataQuery, GetBranchSameAadhaarDataQueryHandler())
+dispatcher.register_query(GetBranchSameAddressDataQuery, GetBranchSameAddressDataQueryHandler())
 dispatcher.register_query(GetCustomerRiskDetailsQuery, GetCustomerRiskDetailsQueryHandler())
 dispatcher.register_query(GetCenterDisbursementsQuery, GetCenterDisbursementsQueryHandler())
 dispatcher.register_query(GetCenterStaffHandoverQuery, GetCenterStaffHandoverQueryHandler())
@@ -569,6 +571,27 @@ def get_branch_same_aadhaar_data(request):
 
     try:
         query = GetBranchSameAadhaarDataQuery(branch_id=str(branch_id), branch_name=data.get('branch_name'), as_on_date=as_on_date, report_type=report_type)
+        result = dispatcher.query(query)
+        return JsonResponse(result)
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def get_branch_same_address_data(request):
+    data, error_resp = parse_post_payload(request, "get_branch_same_address_data")
+    if error_resp: return error_resp
+    user, error_resp = validate_user_view(data.get('token', ''))
+    if error_resp: return error_resp
+
+    branch_id = data.get('branch_id') or data.get('branch_name')
+    as_on_date = data.get('as_on_date')
+    report_type = data.get('report_type', 'Same-Address-Customer')
+    if not branch_id:
+        return JsonResponse({'success': False, 'message': 'branch_id or branch_name is required'}, status=400)
+
+    try:
+        query = GetBranchSameAddressDataQuery(branch_id=str(branch_id), branch_name=data.get('branch_name'), as_on_date=as_on_date, report_type=report_type)
         result = dispatcher.query(query)
         return JsonResponse(result)
     except Exception as e:

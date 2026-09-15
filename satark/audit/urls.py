@@ -16,7 +16,7 @@ from .views import (
     get_center_checklist_points, save_center_checklist_point,
     get_client_checklist_points, save_client_checklist_point,
     view_feedback_file, archive_feedback_file,
-    get_center_risk_details, get_branch_overview, get_branch_ntb_ntc_counts, get_branch_ntb_ntc_data, get_branch_death_data, get_branch_same_mobile_data, get_branch_same_aadhaar_data, get_customer_risk_details, get_center_disbursements,
+    get_center_risk_details, get_branch_overview, get_branch_ntb_ntc_counts, get_branch_ntb_ntc_data, get_branch_death_data, get_branch_same_mobile_data, get_branch_same_aadhaar_data, get_branch_same_address_data, get_customer_risk_details, get_center_disbursements,
     get_center_staff_handover,
     get_center_audit_feedback, save_center_audit_feedback,
     view_center_feedback_file, archive_center_feedback_file,
@@ -86,6 +86,7 @@ urlpatterns = [
     path('branch/death-data/', get_branch_death_data, name='get_branch_death_data'),
     path('branch/same-mobile-data/', get_branch_same_mobile_data, name='get_branch_same_mobile_data'),
     path('branch/same-aadhaar-data/', get_branch_same_aadhaar_data, name='get_branch_same_aadhaar_data'),
+    path('branch/same-address-data/', get_branch_same_address_data, name='get_branch_same_address_data'),
     path('branch/ml-risk-predictions/', get_branch_ml_risk_predictions, name='get_branch_ml_risk_predictions'),
     path('branch/past-audits-trend/', get_branch_past_audits_trend, name='get_branch_past_audits_trend'),
 

@@ -777,6 +777,57 @@ class GetBranchSameAadhaarDataQueryHandler(QueryHandler):
             raise e
 
 
+class GetBranchSameAddressDataQuery(Query):
+    def __init__(self, branch_id: str = None, branch_name: str = None, as_on_date: str = None, report_type: str = 'Same-Address-Customer'):
+        self.branch_id = branch_id or str(branch_name or '')
+        self.as_on_date = as_on_date or '2026-06-08'
+        self.report_type = report_type or 'Same-Address-Customer'
+
+
+class GetBranchSameAddressDataQueryHandler(QueryHandler):
+    def execute(self, query: GetBranchSameAddressDataQuery) -> dict:
+        branch_id = query.branch_id
+        as_on_date = query.as_on_date
+        report_type = query.report_type
+        try:
+            results = []
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    EXEC SP_GetBranchOverview_Supplementary @BranchID = %s, @AsOnDate = %s, @ReportType = %s
+                """, [branch_id, as_on_date, report_type])
+                raw_cols = [col[0] for col in cursor.description] if cursor.description else []
+                cols = []
+                seen = {}
+                for i, c in enumerate(raw_cols):
+                    name = c.strip() if c and c.strip() else f'col_{i}'
+                    if name in seen:
+                        seen[name] += 1
+                        name = f"{name}_{seen[name]}"
+                    else:
+                        seen[name] = 0
+                    cols.append(name)
+
+                rows = cursor.fetchall()
+                print(f"[SAME ADDRESS DATA] Branch: {branch_id}, Date: {as_on_date}, Total rows fetched: {len(rows)}")
+
+                for row in rows:
+                    row_dict = dict(zip(cols, row))
+                    for key, val in row_dict.items():
+                        if isinstance(val, decimal.Decimal):
+                            row_dict[key] = float(val)
+                        elif hasattr(val, 'isoformat'):
+                            row_dict[key] = val.isoformat()
+                    results.append(row_dict)
+
+            return {'success': True, 'data': results}
+        except Exception as e:
+            log_error(f"GetBranchSameAddressDataQueryHandler failed: {str(e)}")
+            print(f"[SAME ADDRESS DATA ERROR]: {str(e)}")
+            raise e
+
+
+
+
 
 
 
