@@ -44,6 +44,7 @@ from .queries import (
     GetBranchSameAddressDataQuery, GetBranchSameAddressDataQueryHandler,
     GetBranchSameCoApplicantDataQuery, GetBranchSameCoApplicantDataQueryHandler,
     GetBranchSameApplicantCoApplicantDataQuery, GetBranchSameApplicantCoApplicantDataQueryHandler,
+    GetBranchStaffHandoverQuery, GetBranchStaffHandoverQueryHandler,
     GetCustomerRiskDetailsQuery, GetCustomerRiskDetailsQueryHandler,
     GetCenterDisbursementsQuery, GetCenterDisbursementsQueryHandler,
     GetCenterStaffHandoverQuery, GetCenterStaffHandoverQueryHandler,
@@ -101,6 +102,7 @@ dispatcher.register_query(GetBranchSameAadhaarDataQuery, GetBranchSameAadhaarDat
 dispatcher.register_query(GetBranchSameAddressDataQuery, GetBranchSameAddressDataQueryHandler())
 dispatcher.register_query(GetBranchSameCoApplicantDataQuery, GetBranchSameCoApplicantDataQueryHandler())
 dispatcher.register_query(GetBranchSameApplicantCoApplicantDataQuery, GetBranchSameApplicantCoApplicantDataQueryHandler())
+dispatcher.register_query(GetBranchStaffHandoverQuery, GetBranchStaffHandoverQueryHandler())
 dispatcher.register_query(GetCustomerRiskDetailsQuery, GetCustomerRiskDetailsQueryHandler())
 dispatcher.register_query(GetCenterDisbursementsQuery, GetCenterDisbursementsQueryHandler())
 dispatcher.register_query(GetCenterStaffHandoverQuery, GetCenterStaffHandoverQueryHandler())
@@ -638,6 +640,26 @@ def get_branch_same_applicant_coapplicant_data(request):
 
     try:
         query = GetBranchSameApplicantCoApplicantDataQuery(branch_id=str(branch_id), branch_name=data.get('branch_name'), as_on_date=as_on_date, report_type=report_type)
+        result = dispatcher.query(query)
+        return JsonResponse(result)
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def get_branch_staff_handover_data(request):
+    data, error_resp = parse_post_payload(request, "get_branch_staff_handover_data")
+    if error_resp: return error_resp
+    user, error_resp = validate_user_view(data.get('token', ''))
+    if error_resp: return error_resp
+
+    branch_name = data.get('branch_name') or data.get('branch_id')
+    as_on_date = data.get('as_on_date')
+    if not branch_name:
+        return JsonResponse({'success': False, 'message': 'branch_name or branch_id is required'}, status=400)
+
+    try:
+        query = GetBranchStaffHandoverQuery(branch_name=str(branch_name), branch_id=data.get('branch_id'), as_on_date=as_on_date)
         result = dispatcher.query(query)
         return JsonResponse(result)
     except Exception as e:

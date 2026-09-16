@@ -924,6 +924,56 @@ class GetBranchSameApplicantCoApplicantDataQueryHandler(QueryHandler):
             raise e
 
 
+class GetBranchStaffHandoverQuery(Query):
+    def __init__(self, branch_name: str = None, branch_id: str = None, as_on_date: str = None):
+        self.branch_name = branch_name or str(branch_id or '')
+        self.branch_id = branch_id
+        self.as_on_date = as_on_date or '2026-06-08'
+
+
+class GetBranchStaffHandoverQueryHandler(QueryHandler):
+    def execute(self, query: GetBranchStaffHandoverQuery) -> dict:
+        branch_name = query.branch_name
+        as_on_date = query.as_on_date
+        try:
+            results = []
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    EXEC SP_GetBranchOverview @BranchName = %s, @AsOnDate = %s, @ReportType = 'BRANCH_STAFF_HANDOVER'
+                """, [branch_name, as_on_date])
+                raw_cols = [col[0] for col in cursor.description] if cursor.description else []
+                cols = []
+                seen = {}
+                for i, c in enumerate(raw_cols):
+                    name = c.strip() if c and c.strip() else f'col_{i}'
+                    if name in seen:
+                        seen[name] += 1
+                        name = f"{name}_{seen[name]}"
+                    else:
+                        seen[name] = 0
+                    cols.append(name)
+
+                rows = cursor.fetchall()
+                print(f"[BRANCH STAFF HANDOVER] Branch: {branch_name}, Date: {as_on_date}, Total rows fetched: {len(rows)}")
+
+                for row in rows:
+                    row_dict = dict(zip(cols, row))
+                    for key, val in row_dict.items():
+                        if isinstance(val, decimal.Decimal):
+                            row_dict[key] = float(val)
+                        elif hasattr(val, 'isoformat'):
+                            row_dict[key] = val.isoformat()
+                    results.append(row_dict)
+
+            return {'success': True, 'data': results}
+        except Exception as e:
+            log_error(f"GetBranchStaffHandoverQueryHandler failed: {str(e)}")
+            print(f"[BRANCH STAFF HANDOVER ERROR]: {str(e)}")
+            raise e
+
+
+
+
 
 
 
