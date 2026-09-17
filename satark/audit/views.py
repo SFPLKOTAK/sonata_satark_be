@@ -45,6 +45,7 @@ from .queries import (
     GetBranchSameCoApplicantDataQuery, GetBranchSameCoApplicantDataQueryHandler,
     GetBranchSameApplicantCoApplicantDataQuery, GetBranchSameApplicantCoApplicantDataQueryHandler,
     GetBranchStaffHandoverQuery, GetBranchStaffHandoverQueryHandler,
+    GetBranchChecklistIntentDataQuery, GetBranchChecklistIntentDataQueryHandler,
     GetCustomerRiskDetailsQuery, GetCustomerRiskDetailsQueryHandler,
     GetCenterDisbursementsQuery, GetCenterDisbursementsQueryHandler,
     GetCenterStaffHandoverQuery, GetCenterStaffHandoverQueryHandler,
@@ -103,6 +104,7 @@ dispatcher.register_query(GetBranchSameAddressDataQuery, GetBranchSameAddressDat
 dispatcher.register_query(GetBranchSameCoApplicantDataQuery, GetBranchSameCoApplicantDataQueryHandler())
 dispatcher.register_query(GetBranchSameApplicantCoApplicantDataQuery, GetBranchSameApplicantCoApplicantDataQueryHandler())
 dispatcher.register_query(GetBranchStaffHandoverQuery, GetBranchStaffHandoverQueryHandler())
+dispatcher.register_query(GetBranchChecklistIntentDataQuery, GetBranchChecklistIntentDataQueryHandler())
 dispatcher.register_query(GetCustomerRiskDetailsQuery, GetCustomerRiskDetailsQueryHandler())
 dispatcher.register_query(GetCenterDisbursementsQuery, GetCenterDisbursementsQueryHandler())
 dispatcher.register_query(GetCenterStaffHandoverQuery, GetCenterStaffHandoverQueryHandler())
@@ -660,6 +662,30 @@ def get_branch_staff_handover_data(request):
 
     try:
         query = GetBranchStaffHandoverQuery(branch_name=str(branch_name), branch_id=data.get('branch_id'), as_on_date=as_on_date)
+        result = dispatcher.query(query)
+        return JsonResponse(result)
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
+
+
+@csrf_exempt
+def get_branch_checklist_intent_data(request):
+    data, error_resp = parse_post_payload(request, "get_branch_checklist_intent_data")
+    if error_resp: return error_resp
+    user, error_resp = validate_user_view(data.get('token', ''))
+    if error_resp: return error_resp
+
+    branch_id = data.get('branchid') or data.get('branch_id') or data.get('branch_name')
+    as_on_date = data.get('asondate') or data.get('as_on_date')
+    report_type = data.get('report_type') or data.get('reporttype')
+
+    if not branch_id:
+        return JsonResponse({'success': False, 'message': 'branchid or branch_id is required'}, status=400)
+    if not report_type:
+        return JsonResponse({'success': False, 'message': 'report_type is required'}, status=400)
+
+    try:
+        query = GetBranchChecklistIntentDataQuery(branch_id=branch_id, as_on_date=as_on_date, report_type=str(report_type))
         result = dispatcher.query(query)
         return JsonResponse(result)
     except Exception as e:
