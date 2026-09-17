@@ -1,0 +1,17 @@
+name: Auto-Pull Production on Server
+
+on:
+  push:
+    branches:
+      - satark_production
+  workflow_dispatch:
+
+jobs:
+  pull-code:
+    runs-on: self-hosted
+    steps:
+      - name: Git Pull Production on Server
+        run: |
+          cd C:\inetpub\wwwroot\sonata_satark_be
+          git checkout satark_production
+          git pull origin satark_production
