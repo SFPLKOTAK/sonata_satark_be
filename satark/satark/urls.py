@@ -4,9 +4,9 @@
 from django.urls import path, include
 
 urlpatterns = [
-    path('marklytix/', include('Marklytix.urls')),
-    path('auth/', include('authentication.urls')),
-    path('planner/', include('planner.urls')),
-    path('audit/', include('audit.urls')),
-    path('loan-opportunity/', include('loan_opportunity.urls')),
+    path('backend/marklytix/', include('Marklytix.urls')),
+    path('backend/auth/', include('authentication.urls')),
+    path('backend/planner/', include('planner.urls')),
+    path('backend/audit/', include('audit.urls')),
+    path('backend/loan-opportunity/', include('loan_opportunity.urls')),
 ]
