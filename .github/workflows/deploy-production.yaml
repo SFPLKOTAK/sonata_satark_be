@@ -32,59 +32,36 @@ jobs:
 
           cd C:\inetpub\wwwroot\sonata_satark_be
 
-          # 2. Self-healing: Abort any leftover merge state from previously interrupted jobs
-          if (Test-Path ".git\MERGE_HEAD") {
-              Write-Host "Unfinished merge state detected from a previous failed run. Aborting merge..."
-              git merge --abort
-          }
+          # 2. Clear any stuck index states or unmerged conflicts
+          git reset --hard HEAD
 
-          # 3. Fetch all remote branches
-          git -c "url.https://x-access-token:${env:GH_TOKEN}@github.com/.insteadOf=https://github.com/" fetch origin
+          # 3. Fetch latest origin refs using in-memory token override
+          git -c "url.https://x-access-token:${env:GH_TOKEN}@github.com/.insteadOf=https://github.com/" fetch origin satark_production
 
-          # 4. Stash any local/untracked changes before checkout/pull
-          $stashOutput = git stash push -u -m "pre-deploy-autostash"
-          $didStash = -not ($stashOutput -match "No local changes to save")
-          Write-Host "Stash output: $stashOutput"
+          # 4. Force checkout and align satark_production with origin/satark_production
+          git checkout -B satark_production origin/satark_production
 
-          # 5. Ensure satark_production branch is checked out safely
-          git checkout satark_production 2>$null
-          if ($LASTEXITCODE -ne 0) {
-              git checkout -b satark_production origin/satark_production
-          }
-
-          # 6. Store requirements.txt hash BEFORE pulling
+          # 5. Store requirements.txt hash BEFORE pulling
           $reqPath = "C:\inetpub\wwwroot\sonata_satark_be\requirements.txt"
           $oldHash = ""
           if (Test-Path $reqPath) {
             $oldHash = (Get-FileHash $reqPath).Hash
           }
 
-          # 7. Pull latest changes using in-memory token override (never touches .git/config)
+          # 6. Pull latest changes using in-memory token override
           git -c "url.https://x-access-token:${env:GH_TOKEN}@github.com/.insteadOf=https://github.com/" pull origin satark_production
           if ($LASTEXITCODE -ne 0) {
-              Write-Error "git pull failed. Attempting to restore stash before exiting."
-              if ($didStash) {
-                  git stash pop
-              }
+              Write-Error "git pull failed"
               exit 1
           }
 
-          # 8. Restore stash if changes were saved
-          if ($didStash) {
-              Write-Host "Restoring stashed changes..."
-              git stash pop
-              if ($LASTEXITCODE -ne 0) {
-                  Write-Host "git stash pop produced a conflict or notice. Stash is kept for safety."
-              }
-          }
-
-          # 9. Store requirements.txt hash AFTER pulling
+          # 7. Store requirements.txt hash AFTER pulling
           $newHash = ""
           if (Test-Path $reqPath) {
             $newHash = (Get-FileHash $reqPath).Hash
           }
 
-          # 10. Install Python dependencies only if requirements.txt changed
+          # 8. Install Python dependencies only if requirements.txt changed
           if ($oldHash -ne $newHash) {
             Write-Host "Dependencies changed. Running pip install..."
             C:\inetpub\wwwroot\sonata_satark_be\env\Scripts\python.exe -m pip install -r $reqPath
@@ -96,7 +73,7 @@ jobs:
             Write-Host "No dependency changes detected. Skipping pip install."
           }
 
-          # 11. Apply Django database migrations
+          # 9. Apply Django database migrations
           cd C:\inetpub\wwwroot\sonata_satark_be\satark
           Write-Host "Running Django migrations..."
           C:\inetpub\wwwroot\sonata_satark_be\env\Scripts\python.exe manage.py migrate --noinput
@@ -105,7 +82,7 @@ jobs:
               exit 1
           }
 
-          # 12. Recycle IIS AppPool and restart site for live update
+          # 10. Recycle IIS AppPool and restart site for live update
           Import-Module WebAdministration
           Restart-WebAppPool -Name "satark_fe" -ErrorAction SilentlyContinue
           Restart-WebItem "IIS:\Sites\satark_fe" -ErrorAction SilentlyContinue
