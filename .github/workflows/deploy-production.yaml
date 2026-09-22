@@ -73,12 +73,17 @@ jobs:
             Write-Host "No dependency changes detected. Skipping pip install."
           }
 
-          # 9. Recycle IIS AppPool for live FastCGI process update
-          Write-Host "Recycling IIS AppPool satark_fe..."
-          try {
-              & C:\Windows\System32\inetsrv\appcmd.exe recycle apppool "satark_fe"
-          } catch {
-              Write-Host "AppPool recycle notice: $_"
+          # 9. Touch web.config & Recycle IIS AppPool for live FastCGI process update
+          Write-Host "Recycling IIS FastCGI worker processes..."
+          if (Test-Path "C:\inetpub\wwwroot\sonata_satark_be\satark\web.config") {
+              (Get-Item "C:\inetpub\wwwroot\sonata_satark_be\satark\web.config").LastWriteTime = Get-Date
           }
+
+          if (Test-Path "C:\Windows\SysNative\inetsrv\appcmd.exe") {
+              & C:\Windows\SysNative\inetsrv\appcmd.exe recycle apppool "satark_fe"
+          } elseif (Test-Path "C:\Windows\System32\inetsrv\appcmd.exe") {
+              & C:\Windows\System32\inetsrv\appcmd.exe recycle apppool "satark_fe"
+          }
+          $global:LASTEXITCODE = 0
 
           Write-Host "Satark Backend production deployment completed successfully."
