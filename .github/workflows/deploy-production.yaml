@@ -82,9 +82,12 @@ jobs:
               exit 1
           }
 
-          # 10. Recycle IIS AppPool and restart site for live update
-          Import-Module WebAdministration
-          Restart-WebAppPool -Name "satark_fe" -ErrorAction SilentlyContinue
-          Restart-WebItem "IIS:\Sites\satark_fe" -ErrorAction SilentlyContinue
+          # 10. Recycle IIS AppPool for live FastCGI process update
+          Write-Host "Recycling IIS AppPool satark_fe..."
+          C:\Windows\System32\inetsrv\appcmd.exe recycle apppool /apppool.name:"satark_fe"
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "IIS AppPool recycle failed"
+              exit 1
+          }
 
           Write-Host "Satark Backend production deployment completed successfully."
