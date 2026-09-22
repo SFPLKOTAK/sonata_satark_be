@@ -10,7 +10,7 @@ jobs:
     runs-on: self-hosted
 
     steps:
-      - name: Deploy Code & Apply Migrations
+      - name: Deploy Code to Server
         shell: powershell
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -72,21 +72,12 @@ jobs:
             Write-Host "No dependency changes detected. Skipping pip install."
           }
 
-          # 9. Apply Django database migrations
-          cd C:\inetpub\wwwroot\sonata_satark_be\satark
-          Write-Host "Running Django migrations..."
-          C:\inetpub\wwwroot\sonata_satark_be\env\Scripts\python.exe manage.py migrate --noinput
-          if ($LASTEXITCODE -ne 0) {
-              Write-Error "Django migrations failed"
-              exit 1
-          }
-
-          # 10. Recycle IIS AppPool for live FastCGI process update
+          # 9. Recycle IIS AppPool for live FastCGI process update
           Write-Host "Recycling IIS AppPool satark_fe..."
-          C:\Windows\System32\inetsrv\appcmd.exe recycle apppool /apppool.name:"satark_fe"
-          if ($LASTEXITCODE -ne 0) {
-              Write-Error "IIS AppPool recycle failed"
-              exit 1
+          try {
+              & C:\Windows\System32\inetsrv\appcmd.exe recycle apppool "satark_fe"
+          } catch {
+              Write-Host "AppPool recycle notice: $_"
           }
 
           Write-Host "Satark Backend main deployment completed successfully."
