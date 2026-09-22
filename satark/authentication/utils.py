@@ -13,7 +13,7 @@ logger.setLevel(logging.INFO)
 
 # --- UPDATED PATH ---
 # Define the directory where logs are stored relative to BASE_DIR
-log_dir = os.pgitath.join(BASE_DIR, 'logs')
+log_dir = os.path.join(BASE_DIR, 'logs')
 log_file = os.path.join(log_dir, 'satark.log')
 
 try:
