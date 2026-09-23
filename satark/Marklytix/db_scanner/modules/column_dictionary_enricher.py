@@ -88,9 +88,9 @@ class ColumnDictionaryEnricher:
             )
             self.engine = create_engine(connection_url, fast_executemany=True, pool_pre_ping=True, pool_recycle=300)
 
-        self.gemma_base_url = os.getenv("GEMMA_BASE_URL", "http://43.242.226.49:8100/v1")
-        self.gemma_api_key = os.getenv("GEMMA_API_KEY", "sk-Y82UGER7Dw97we65RxwfnjRsiWb1CFH0vBB_zqgszUk")
-        self.gemma_model_id = os.getenv("GEMMA_MODEL_ID", "google/gemma-4-E4B-it")
+        self.gemma_base_url = os.getenv("GEMMA_BASE_URL")
+        self.gemma_api_key = os.getenv("GEMMA_API_KEY")
+        self.gemma_model_id = os.getenv("GEMMA_MODEL_ID")
 
         self.llm_client = OpenAI(
             api_key=self.gemma_api_key,

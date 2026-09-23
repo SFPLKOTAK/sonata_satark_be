@@ -326,10 +326,10 @@ def generate_subcategory_prompt(request):
         try:
             from openai import OpenAI
             client = OpenAI(
-                api_key=os.getenv("GEMMA_API_KEY", "sk-Y82UGER7Dw97we65RxwfnjRsiWb1CFH0vBB_zqgszUk"),
-                base_url=os.getenv("GEMMA_BASE_URL", "http://43.242.226.49:8100/v1")
+                api_key=os.getenv("GEMMA_API_KEY"),
+                base_url=os.getenv("GEMMA_BASE_URL")
             )
-            model = os.getenv("GEMMA_MODEL_ID", "google/gemma-4-E4B-it")
+            model = os.getenv("GEMMA_MODEL_ID")
             
             sys_prompt = (
                 "You are an expert SQL Server prompt engineer for Enterprise Financial Audits. "

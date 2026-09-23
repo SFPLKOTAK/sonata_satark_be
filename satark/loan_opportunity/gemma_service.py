@@ -14,9 +14,9 @@ load_dotenv(ENV_PATH, override=True)
 
 logger = logging.getLogger("loan_opportunity.gemma_service")
 
-GEMMA_BASE_URL = os.getenv("GEMMA_BASE_URL", "http://43.242.226.49:8100/v1")
-GEMMA_API_KEY = os.getenv("GEMMA_API_KEY", "sk-Y82UGER7Dw97we65RxwfnjRsiWb1CFH0vBB_zqgszUk")
-GEMMA_MODEL_ID = os.getenv("GEMMA_MODEL_ID", "google/gemma-4-E4B-it")
+GEMMA_BASE_URL = os.getenv("GEMMA_BASE_URL")
+GEMMA_API_KEY = os.getenv("GEMMA_API_KEY")
+GEMMA_MODEL_ID = os.getenv("GEMMA_MODEL_ID")
 
 # Global HTTP Connection Pool for maximum concurrency speed
 _session = requests.Session()
