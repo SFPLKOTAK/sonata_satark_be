@@ -12,9 +12,9 @@ logger = logging.getLogger('satark_auth')
 logger.setLevel(logging.INFO)
 
 # --- UPDATED PATH ---
-# Define the specific directory where you want the logs to go
-log_dir = r"C:\Users\morev\sonata_satark_be\satark\logs"
-log_file = os.path.join(log_dir, 'satark.log') # Named the file 'satark.log'
+# Define the directory where logs are stored relative to BASE_DIR
+log_dir = os.path.join(BASE_DIR, 'logs')
+log_file = os.path.join(log_dir, 'satark.log')
 
 try:
     # Automatically create the directory if it doesn't exist yet

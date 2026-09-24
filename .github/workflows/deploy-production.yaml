@@ -1,9 +1,10 @@
-name: Deploy Satark Backend Main to IIS
+name: Deploy Satark Backend Production to IIS
 
 on:
   push:
     branches:
-      - main
+      - satark_production
+  workflow_dispatch:
 
 jobs:
   build-and-deploy:
@@ -35,10 +36,10 @@ jobs:
           git reset --hard HEAD
 
           # 3. Fetch latest origin refs using in-memory token override
-          git -c "url.https://x-access-token:${env:GH_TOKEN}@github.com/.insteadOf=https://github.com/" fetch origin main
+          git -c "url.https://x-access-token:${env:GH_TOKEN}@github.com/.insteadOf=https://github.com/" fetch origin satark_production
 
-          # 4. Force checkout and align main with origin/main
-          git checkout -B main origin/main
+          # 4. Force checkout and align satark_production with origin/satark_production
+          git checkout -B satark_production origin/satark_production
 
           # 5. Store requirements.txt hash BEFORE pulling
           $reqPath = "C:\inetpub\wwwroot\sonata_satark_be\requirements.txt"
@@ -48,7 +49,7 @@ jobs:
           }
 
           # 6. Pull latest changes using in-memory token override
-          git -c "url.https://x-access-token:${env:GH_TOKEN}@github.com/.insteadOf=https://github.com/" pull origin main
+          git -c "url.https://x-access-token:${env:GH_TOKEN}@github.com/.insteadOf=https://github.com/" pull origin satark_production
           if ($LASTEXITCODE -ne 0) {
               Write-Error "git pull failed"
               exit 1
@@ -85,4 +86,4 @@ jobs:
           }
           $global:LASTEXITCODE = 0
 
-          Write-Host "Satark Backend main deployment completed successfully."
+          Write-Host "Satark Backend production deployment completed successfully."

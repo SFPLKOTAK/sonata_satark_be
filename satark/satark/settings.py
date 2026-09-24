@@ -152,3 +152,7 @@ CHANNEL_LAYERS = {
         "BACKEND": "channels.layers.InMemoryChannelLayer"
     }
 }
+
+
+
+FORCE_SCRIPT_NAME = '/backend'
