@@ -459,6 +459,108 @@
         </div>
     </div>
 
+    <!-- Complete SQL Database Tables & Training Schemas Breakdown -->
+    <div class="section-title">SQL Database Tables & Data Pipeline Infrastructure</div>
+    <div class="grade-table-card">
+        <p style="color: var(--text-muted); margin-bottom: 1.25rem;">
+            Comprehensive overview of source database tables, training datasets, staging tables, and production output schemas used across the ML pipeline.
+        </p>
+
+        <!-- 1. Training & Source Data Tables -->
+        <h3 style="color: var(--accent-cyan); font-size: 1.1rem; margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.5rem;">
+            <span style="background: rgba(6, 182, 212, 0.2); padding: 0.2rem 0.6rem; border-radius: 6px; font-size: 0.8rem;">DATASET</span> 
+            1. Source Operations & Training Data Tables
+        </h3>
+        <table style="margin-bottom: 2rem;">
+            <thead>
+                <tr>
+                    <th>Table Name / Entity</th>
+                    <th>Database / Schema</th>
+                    <th>Role in ML Pipeline</th>
+                    <th>Key Columns & Features Extracted</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>audit_branch_parameter_grade_training_data</code></td>
+                    <td><code>sonata_connect</code></td>
+                    <td><span class="grade-pill grade-a" style="font-size: 0.75rem;">Primary Training Table</span></td>
+                    <td>Contains 6,481 monthly snapshot rows across 619 branches, combining 51 pre-computed SQL sub-scores, raw portfolio counts, and ground-truth field audit scores/grades.</td>
+                </tr>
+                <tr>
+                    <td><code>TBL_ActiveLoansPerformanceData</code></td>
+                    <td><code>Active_Loan_Performance</code></td>
+                    <td><span class="grade-pill grade-b" style="font-size: 0.75rem;">Raw Loan Snapshot</span></td>
+                    <td>Individual loan-level granularity: <code>PINCIPALOS</code>, <code>ARREARDAYS</code>, PAR aging buckets (<code>[1-30 DAYS]</code>, <code>[31-60 DAYS]</code>, etc.), <code>ISWRITEOFF</code>, <code>WRITEOFFAMT</code>, <code>CUSTSTATUS</code>, <code>StaffID</code>, <code>CenterID</code>, <code>PRODUCTNAME</code>, <code>FUNDERTYPE</code>.</td>
+                </tr>
+                <tr>
+                    <td><code>audit_branch_grade_history_final</code> / <code>audit_branch_grade_history</code></td>
+                    <td><code>sonata_connect</code></td>
+                    <td><span class="grade-pill grade-b" style="font-size: 0.75rem;">Audit Ground Truth</span></td>
+                    <td>Historical registry of official field audit results per branch: <code>Branch_ID</code>, <code>Month</code> / <code>AsOnDate</code>, official audit score (<code>Score</code>, 0-100), and official grade (<code>Grade</code>: A, B, C, D).</td>
+                </tr>
+                <tr>
+                    <td><code>mst_usertbl</code></td>
+                    <td><code>sonata_Dec</code></td>
+                    <td><span class="grade-pill grade-c" style="font-size: 0.75rem;">Staff & HR Master</span></td>
+                    <td>Staff employment tenure metrics: <code>UserID</code> (matched with <code>StaffID</code>), <code>BranchJoinDate</code> used to calculate <code>Staff_Overstay_12M_Pct</code> (&gt;12 months tenure) and <code>Staff_Tenure_Under3M_Pct</code> (&lt;3 months tenure).</td>
+                </tr>
+                <tr>
+                    <td><code>audit_branch_parameter_training_data</code></td>
+                    <td><code>sonata_connect</code> (Staging)</td>
+                    <td><span class="grade-pill grade-d" style="font-size: 0.75rem;">Intermediate Feature Join</span></td>
+                    <td>Intermediate staging table generated during feature calculation before inner-joining with field audit ground-truth history.</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <!-- 2. Production Staging & Model Inference Schemas -->
+        <h3 style="color: var(--accent-indigo); font-size: 1.1rem; margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.5rem;">
+            <span style="background: rgba(99, 102, 241, 0.2); padding: 0.2rem 0.6rem; border-radius: 6px; font-size: 0.8rem; color: #a5b4fc;">PRODUCTION</span> 
+            2. Production Staging & Batch Scoring Output Tables
+        </h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Table Name</th>
+                    <th>Type / Scope</th>
+                    <th>Purpose & Functionality</th>
+                    <th>Key Storage Output Fields</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>dbo.ML_TBL_Monthly_Branch_Feature_Staging</code></td>
+                    <td>Staging Table (Pre-Inference)</td>
+                    <td>Populated monthly by <code>SP_BranchRiskScore</code> stored procedure. Pre-computes and standardizes all 51 ML input features across active branches for the snapshot month.</td>
+                    <td><code>BRANCHID</code>, <code>TotalLoans</code>, <code>TotalPrincipalOS</code>, PAR 1-30/31-60/61-90 amounts, 17 SQL sub-scores, staff caseload ratio, staff tenure ratios, center sizes, <code>AsOnDate</code>.</td>
+                </tr>
+                <tr>
+                    <td><code>dbo.ML_TBL_Monthly_Branch_Risk_Predictions</code></td>
+                    <td>Active Predictions (Dashboard UI)</td>
+                    <td>Stores the latest month's scored results per branch. Powers real-time dashboard UI views, risk alert banners, and high-risk branch filtering.</td>
+                    <td><code>Branch_ID</code>, <code>AsOnDate</code>, <code>Predicted_Score</code>, <code>Predicted_Grade_From_Score</code>, <code>Final_Recommended_Grade</code>, <code>Risk_Level</code> (HIGH/NORMAL), <code>Risk_Warnings</code>, <code>Key_points_impacting_risk</code>.</td>
+                </tr>
+                <tr>
+                    <td><code>dbo.ML_TBL_Branch_Risk_Prediction_History</code></td>
+                    <td>Historical Prediction Archive</td>
+                    <td>Append-only MoM trajectory archive. Tracks model performance over time and pairs past predictions with actual field audit scores when completed.</td>
+                    <td><code>PredictionID</code> (PK), <code>Branch_ID</code>, <code>AsOnDate</code>, <code>Predicted_Score</code>, <code>Final_Recommended_Grade</code>, <code>Actual_Field_Score</code>, <code>Actual_Field_Grade</code>, <code>Actual_Audit_Date</code>.</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <!-- 3. Data Processing Scripts & Procedure Pipeline -->
+        <div style="margin-top: 1.5rem; background: rgba(17, 24, 39, 0.8); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 12px; padding: 1.25rem;">
+            <h4 style="color: var(--accent-cyan); font-size: 0.95rem; margin-bottom: 0.5rem;">⚙️ Stored Procedure & Script Pipeline Execution Flow:</h4>
+            <ul style="color: var(--text-muted); font-size: 0.88rem; margin-left: 1.25rem; line-height: 1.7;">
+                <li><strong style="color: #ffffff;">Feature Staging SQL (<code>populate_monthly_feature_staging.sql</code> / <code>SP_BranchRiskScore</code>):</strong> 6-step SQL process executing Base Snapshot scan &rarr; Portfolio Quality calculation &rarr; MoM Trend/Velocity diffs &rarr; Collection Efficiency metrics &rarr; Staff & Center Concentration risk ranking &rarr; Final Staging Assembly into <code>ML_TBL_Monthly_Branch_Feature_Staging</code>.</li>
+                <li><strong style="color: #ffffff;">Batch Scoring Engine (<code>run_monthly_batch_prediction.py</code>):</strong> Automated python script reading from staging features, applying the trained Stacking Ensemble model, generating textual risk drivers (e.g., <em>"High Staff Overstay Risk (42.1%)"</em>), and atomically inserting into active prediction and history tables.</li>
+                <li><strong style="color: #ffffff;">Actual Audit Ground-Truth Feedback Loop:</strong> As field auditors complete physical branch audits, field scores are updated in <code>ML_TBL_Branch_Risk_Prediction_History</code> to calculate real-world model accuracy (CV MAE 4.26 / Out-of-Time MAE 5.14).</li>
+            </ul>
+        </div>
+    </div>
+
     <!-- Official Grade Rules -->
     <div class="section-title">Official Company Grade Thresholds</div>
     <div class="grade-table-card">

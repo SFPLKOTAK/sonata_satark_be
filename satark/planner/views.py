@@ -212,7 +212,7 @@ def get_current_plan(request):
             logger.error(f"Token validation failed in get_current_plan: {e}")
 
     try:
-        plan_month = '2026-07'
+        plan_month = date.today().strftime('%Y-%m')
         query = GetCurrentPlanQuery(
             division=division,
             plan_month=plan_month,
