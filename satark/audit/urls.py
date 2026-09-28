@@ -29,13 +29,15 @@ from .views import (
     record_point_decision, finalize_review, get_audit_review_status,
     # Auditee
     get_auditee_dashboard, get_auditee_audits, get_auditee_caps,
-    get_compliance_tickets, send_ticket_alert, resolve_ticket, initiate_ticket_call,
+    get_compliance_tickets, get_auditor_compliance_tickets, send_ticket_alert, resolve_ticket, initiate_ticket_call,
     submit_ticket_response, view_ticket_response_file, get_branch_ml_risk_predictions, get_branch_past_audits_trend,
-    get_center_progress, get_client_progress
+    get_center_progress, get_client_progress,
+    get_executive_dashboard
 )
 
 urlpatterns = [
     path('auditor-dashboard/', get_auditor_dashboard, name='get_auditor_dashboard'),
+    path('executive-dashboard/', get_executive_dashboard, name='get_executive_dashboard'),
     # Center & Client Progress from SP dbo.usp_AuditCenterProgress
     path('center-progress/', get_center_progress, name='get_center_progress'),
     path('client-progress/', get_client_progress, name='get_client_progress'),
@@ -122,6 +124,7 @@ urlpatterns = [
 
     # Compliance Tickets
     path('compliance/tickets/', get_compliance_tickets, name='get_compliance_tickets'),
+    path('compliance/auditor/tickets/', get_auditor_compliance_tickets, name='get_auditor_compliance_tickets'),
     path('compliance/tickets/<int:ticket_id>/alert/', send_ticket_alert, name='send_ticket_alert'),
     path('compliance/tickets/<int:ticket_id>/resolve/', resolve_ticket, name='resolve_ticket'),
     path('compliance/tickets/<int:ticket_id>/call/', initiate_ticket_call, name='initiate_ticket_call'),

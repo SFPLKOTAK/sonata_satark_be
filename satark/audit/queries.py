@@ -2995,3 +2995,227 @@ class ViewTicketResponseFileQueryHandler(QueryHandler):
         except Exception as e:
             log_error(f"ViewTicketResponseFileQueryHandler failed: {str(e)}")
             return {'success': False, 'message': str(e), 'status_code': 500}
+
+
+class GetAuditorComplianceTicketsQuery(Query):
+    def __init__(self, user_id: int):
+        self.user_id = user_id
+
+
+class GetAuditorComplianceTicketsQueryHandler(QueryHandler):
+    def execute(self, query: GetAuditorComplianceTicketsQuery) -> dict:
+        try:
+            tickets = []
+            with connection.cursor() as cursor:
+                where_clause = """
+                    WHERE (
+                        ct.auditor_id = %s 
+                        OR apc.assigned_auditor = %s
+                        OR ct.audit_id IN (SELECT id FROM dbo.audit_plan_current WHERE assigned_auditor = %s)
+                        OR TRY_CAST(ct.branch_id AS INT) IN (SELECT branch_id FROM dbo.audit_plan_current WHERE assigned_auditor = %s)
+                    )
+                """
+                params = [query.user_id, query.user_id, query.user_id, query.user_id]
+
+                # Branch Tickets
+                sql = f"""
+                    SELECT ct.ticket_id, ct.cap_type, ct.status, ct.created_at, ct.updated_at,
+                           b.Branch AS branch_name, bf.section_name, bf.intent_title AS parameter_name,
+                           u1.UserName AS auditor_name, u1.ContactNo AS auditor_mobile, u2.UserName AS auditee_name, u2.ContactNo AS auditee_mobile, bf.normal_remark, ct.branchid, ct.centerid, ct.clientid, ct.feedback_id, ct.audit_id,
+                           abp.audit_status AS audit_progress_status
+                    FROM dbo.compliance_tickets ct
+                    JOIN dbo.audit_branch_checklist_feedback bf ON ct.feedback_id = bf.id AND ct.cap_type = 'BRANCH'
+                    LEFT JOIN dbo.audit_plan_current apc ON (ct.audit_id = apc.id OR (ct.auditor_id = apc.assigned_auditor AND TRY_CAST(ct.branch_id AS INT) = apc.branch_id))
+                    LEFT JOIN dbo.audit_branch_progress abp ON (apc.id = abp.audit_id OR ct.audit_id = abp.audit_id)
+                    LEFT JOIN dbo.VW_Branch_To_GeographicalHierarchy b ON TRY_CAST(ct.branch_id AS INT) = b.BranchID
+                    LEFT JOIN dbo.accounts_mst_usertbl u1 ON ct.auditor_id = u1.UserID
+                    LEFT JOIN (SELECT u.UserID, u.UserName, u.BUID, u.ContactNo FROM dbo.accounts_mst_usertbl u JOIN dbo.map_userRole m ON u.UserID = m.UserID WHERE m.RoleId = 12 AND m.IsActive = 1) u2 ON TRY_CAST(u2.BUID AS INT) = TRY_CAST(ct.branch_id AS INT)
+                    {where_clause}
+                    
+                    UNION ALL
+                    
+                    SELECT ct.ticket_id, ct.cap_type, ct.status, ct.created_at, ct.updated_at,
+                           b.Branch AS branch_name, 'Center Level' AS section_name, cf.parameter_name,
+                           u1.UserName AS auditor_name, u1.ContactNo AS auditor_mobile, u2.UserName AS auditee_name, u2.ContactNo AS auditee_mobile, cf.normal_remark, ct.branchid, ct.centerid, ct.clientid, ct.feedback_id, ct.audit_id,
+                           abp.audit_status AS audit_progress_status
+                    FROM dbo.compliance_tickets ct
+                    JOIN dbo.audit_center_checklist_feedback cf ON ct.feedback_id = cf.id AND ct.cap_type = 'CENTER'
+                    LEFT JOIN dbo.audit_plan_current apc ON (ct.audit_id = apc.id OR (ct.auditor_id = apc.assigned_auditor AND TRY_CAST(ct.branch_id AS INT) = apc.branch_id))
+                    LEFT JOIN dbo.audit_branch_progress abp ON (apc.id = abp.audit_id OR ct.audit_id = abp.audit_id)
+                    LEFT JOIN dbo.VW_Branch_To_GeographicalHierarchy b ON TRY_CAST(ct.branch_id AS INT) = b.BranchID
+                    LEFT JOIN dbo.accounts_mst_usertbl u1 ON ct.auditor_id = u1.UserID
+                    LEFT JOIN (SELECT u.UserID, u.UserName, u.BUID, u.ContactNo FROM dbo.accounts_mst_usertbl u JOIN dbo.map_userRole m ON u.UserID = m.UserID WHERE m.RoleId = 12 AND m.IsActive = 1) u2 ON TRY_CAST(u2.BUID AS INT) = TRY_CAST(ct.branch_id AS INT)
+                    {where_clause}
+                    
+                    UNION ALL
+                    
+                    SELECT ct.ticket_id, ct.cap_type, ct.status, ct.created_at, ct.updated_at,
+                           b.Branch AS branch_name, 'Client Level' AS section_name, clf.parameter_name,
+                           u1.UserName AS auditor_name, u1.ContactNo AS auditor_mobile, u2.UserName AS auditee_name, u2.ContactNo AS auditee_mobile, clf.remarks AS normal_remark, ct.branchid, ct.centerid, ct.clientid, ct.feedback_id, ct.audit_id,
+                           abp.audit_status AS audit_progress_status
+                    FROM dbo.compliance_tickets ct
+                    JOIN dbo.audit_client_checklist_feedback clf ON ct.feedback_id = clf.id AND ct.cap_type = 'CLIENT'
+                    LEFT JOIN dbo.audit_plan_current apc ON (ct.audit_id = apc.id OR (ct.auditor_id = apc.assigned_auditor AND TRY_CAST(ct.branch_id AS INT) = apc.branch_id))
+                    LEFT JOIN dbo.audit_branch_progress abp ON (apc.id = abp.audit_id OR ct.audit_id = abp.audit_id)
+                    LEFT JOIN dbo.VW_Branch_To_GeographicalHierarchy b ON TRY_CAST(ct.branch_id AS INT) = b.BranchID
+                    LEFT JOIN dbo.accounts_mst_usertbl u1 ON ct.auditor_id = u1.UserID
+                    LEFT JOIN (SELECT u.UserID, u.UserName, u.BUID, u.ContactNo FROM dbo.accounts_mst_usertbl u JOIN dbo.map_userRole m ON u.UserID = m.UserID WHERE m.RoleId = 12 AND m.IsActive = 1) u2 ON TRY_CAST(u2.BUID AS INT) = TRY_CAST(ct.branch_id AS INT)
+                    {where_clause}
+                    
+                    ORDER BY ct.created_at DESC
+                """
+                
+                final_params = params * 3
+                cursor.execute(sql, final_params)
+                
+                columns = [col[0] for col in cursor.description]
+                raw_rows = cursor.fetchall()
+                seen_ticket_ids = set()
+
+                for row in raw_rows:
+                    t = dict(zip(columns, row))
+                    if t['ticket_id'] in seen_ticket_ids:
+                        continue
+                    seen_ticket_ids.add(t['ticket_id'])
+
+                    # Fetch alerts for this ticket
+                    cursor.execute("""
+                        SELECT a.message, a.created_at, u.UserName as sender_name 
+                        FROM dbo.compliance_ticket_alerts a
+                        LEFT JOIN dbo.accounts_mst_usertbl u ON a.sender_id = u.UserID
+                        WHERE a.ticket_id = %s
+                        ORDER BY a.created_at ASC
+                    """, [t['ticket_id']])
+                    al_cols = [c[0] for c in cursor.description]
+                    t['alerts'] = [dict(zip(al_cols, r)) for r in cursor.fetchall()]
+
+                    # Fetch reviewer remarks for this ticket
+                    reviewer_remarks = []
+                    fid = t.get('feedback_id')
+                    cap_type = t.get('cap_type')
+                    if fid and cap_type:
+                        log_table = None
+                        if cap_type == 'BRANCH':
+                            log_table = 'dbo.audit_branch_checklist_review_log'
+                        elif cap_type == 'CENTER':
+                            log_table = 'dbo.audit_center_checklist_review_log'
+                        elif cap_type == 'CLIENT':
+                            log_table = 'dbo.audit_client_checklist_review_log'
+                        
+                        if log_table:
+                            try:
+                                cursor.execute(f"""
+                                    SELECT review_remark, decided_at
+                                    FROM {log_table}
+                                    WHERE feedback_id = %s AND review_remark IS NOT NULL AND LTRIM(RTRIM(review_remark)) <> ''
+                                    ORDER BY log_id DESC
+                                """, [fid])
+                                for r_row in cursor.fetchall():
+                                    reviewer_remarks.append({
+                                        'remark': r_row[0],
+                                        'decided_at': r_row[1].isoformat() if hasattr(r_row[1], 'isoformat') else str(r_row[1]) if r_row[1] else None
+                                    })
+                            except Exception:
+                                pass
+                    t['reviewer_remarks'] = reviewer_remarks
+                    
+                    # Fetch BM/Compliance responses for this ticket
+                    cursor.execute("""
+                        SELECT r.response_id, r.sender_id, r.message, r.file_name, r.created_at, u.UserName as sender_name,
+                               (SELECT TOP 1 rl.RoleName FROM dbo.map_userRole mur JOIN dbo.mst_role rl ON mur.RoleId = rl.RoleId WHERE mur.UserID = r.sender_id AND mur.IsActive = 1) as sender_role
+                        FROM dbo.compliance_ticket_responses r
+                        LEFT JOIN dbo.accounts_mst_usertbl u ON r.sender_id = u.UserID
+                        WHERE r.ticket_id = %s
+                        ORDER BY r.created_at ASC
+                    """, [t['ticket_id']])
+                    resp_cols = [c[0] for c in cursor.description]
+                    responses = [dict(zip(resp_cols, r)) for r in cursor.fetchall()]
+                    for r in responses:
+                        r['created_at'] = r['created_at'].isoformat() if hasattr(r['created_at'], 'isoformat') else str(r['created_at'])
+                        r['has_file'] = bool(r.get('file_name'))
+                    t['responses'] = responses
+
+                    tickets.append(t)
+                    
+            return {'success': True, 'tickets': tickets, 'status_code': 200}
+        except Exception as e:
+            log_error(f"GetAuditorComplianceTicketsQuery failed: {str(e)}")
+            return {'success': False, 'message': str(e), 'status_code': 500}
+
+
+class GetExecutiveDashboardQuery(Query):
+    def __init__(self, user=None, report_type='ALL', as_on_date=None, auditor_id=None):
+        self.user = user
+        self.report_type = report_type or 'ALL'
+        self.as_on_date = as_on_date
+        self.auditor_id = auditor_id
+
+
+class GetExecutiveDashboardQueryHandler(QueryHandler):
+    def execute(self, query: GetExecutiveDashboardQuery) -> dict:
+        user_id = query.user.UserID if query.user and hasattr(query.user, 'UserID') else None
+        auditor_id = query.auditor_id or (str(user_id) if user_id else None)
+        as_on_date = query.as_on_date
+        report_type = query.report_type
+
+        def run_sp(rt):
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    EXEC dbo.usp_ExecutiveDashboard
+                        @ReportType = %s,
+                        @AuditorID = %s,
+                        @UserID = %s,
+                        @AsOnDate = %s
+                """, [rt, auditor_id, user_id, as_on_date])
+                if not cursor.description:
+                    return []
+                cols = [col[0] for col in cursor.description]
+                rows = cursor.fetchall()
+                results = []
+                for row in rows:
+                    row_dict = dict(zip(cols, row))
+                    for k, v in row_dict.items():
+                        if isinstance(v, decimal.Decimal):
+                            row_dict[k] = float(v)
+                        elif hasattr(v, 'isoformat'):
+                            row_dict[k] = v.isoformat()
+                    results.append(row_dict)
+                return results
+
+        try:
+            if report_type == 'ALL':
+                kpis_res = run_sp('KPIS')
+                kpis = kpis_res[0] if kpis_res else {}
+                risk_matrix = run_sp('RISK_MATRIX')
+                plan_prog_res = run_sp('PLAN_PROGRESS')
+                plan_progress = plan_prog_res[0] if plan_prog_res else {}
+                plan_monthly_trend = run_sp('PLAN_MONTHLY_TREND')
+                grade_dist = run_sp('GRADE_DISTRIBUTION')
+                regional_heatmap = run_sp('REGIONAL_HEATMAP')
+                alerts = run_sp('ALERTS')
+                portfolio_risk = run_sp('PORTFOLIO_RISK')
+
+                return {
+                    'success': True,
+                    'kpis': kpis,
+                    'risk_matrix': risk_matrix,
+                    'plan_progress': plan_progress,
+                    'plan_monthly_trend': plan_monthly_trend,
+                    'grade_distribution': grade_dist,
+                    'regional_heatmap': regional_heatmap,
+                    'alerts': alerts,
+                    'portfolio_risk': portfolio_risk,
+                    'status_code': 200
+                }
+            else:
+                data = run_sp(report_type)
+                return {
+                    'success': True,
+                    'report_type': report_type,
+                    'data': data,
+                    'status_code': 200
+                }
+        except Exception as e:
+            log_error(f"GetExecutiveDashboardQueryHandler failed: {str(e)}")
+            return {'success': False, 'message': str(e), 'status_code': 500}
+

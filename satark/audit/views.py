@@ -64,7 +64,8 @@ from .queries import (
     GetBranchReportExcelQuery, GetBranchReportExcelQueryHandler,
     GetAuditeeDashboardQuery, GetAuditeeDashboardQueryHandler,
     GetAuditeeAuditsQuery, GetAuditeeAuditsQueryHandler,
-    GetAuditeeCapsQuery, GetAuditeeCapsQueryHandler
+    GetAuditeeCapsQuery, GetAuditeeCapsQueryHandler,
+    GetExecutiveDashboardQuery, GetExecutiveDashboardQueryHandler
 )
 
 logger = logging.getLogger("audit.views")
@@ -124,6 +125,7 @@ dispatcher.register_query(GetBranchReportExcelQuery, GetBranchReportExcelQueryHa
 dispatcher.register_query(GetAuditeeDashboardQuery, GetAuditeeDashboardQueryHandler())
 dispatcher.register_query(GetAuditeeAuditsQuery, GetAuditeeAuditsQueryHandler())
 dispatcher.register_query(GetAuditeeCapsQuery, GetAuditeeCapsQueryHandler())
+dispatcher.register_query(GetExecutiveDashboardQuery, GetExecutiveDashboardQueryHandler())
 
 
 # --- Reusable View Helper ---
@@ -1240,7 +1242,10 @@ def get_auditee_caps(request):
         return JsonResponse({'success': False, 'message': f'Internal Server Error: {str(e)}'}, status=500)
 
 from .commands import SendTicketAlertCommand, SendTicketAlertCommandHandler, ResolveTicketCommand, ResolveTicketCommandHandler
-from .queries import GetComplianceTicketsQuery, GetComplianceTicketsQueryHandler
+from .queries import (
+    GetComplianceTicketsQuery, GetComplianceTicketsQueryHandler,
+    GetAuditorComplianceTicketsQuery, GetAuditorComplianceTicketsQueryHandler
+)
 
 
 # --- Compliance Ticketing Endpoints ----------------------------------------
@@ -1256,6 +1261,21 @@ def get_compliance_tickets(request):
         user_id = user.UserID
         handler = GetComplianceTicketsQueryHandler()
         result = handler.execute(GetComplianceTicketsQuery(user_id=user_id))
+        return JsonResponse(result, status=result.get('status_code', 200))
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': str(e)}, status=500)
+
+@csrf_exempt
+@require_http_methods(["GET"])
+def get_auditor_compliance_tickets(request):
+    try:
+        token = request.headers.get('Authorization', '').replace('Bearer ', '')
+        user, error_resp = validate_user_view(token)
+        if error_resp: return error_resp
+        
+        user_id = user.UserID
+        handler = GetAuditorComplianceTicketsQueryHandler()
+        result = handler.execute(GetAuditorComplianceTicketsQuery(user_id=user_id))
         return JsonResponse(result, status=result.get('status_code', 200))
     except Exception as e:
         return JsonResponse({'success': False, 'message': str(e)}, status=500)
@@ -1738,4 +1758,49 @@ def get_client_progress(request):
     if request.method == 'GET':
         request.GET = request.GET.copy()
         request.GET['task'] = 'client'
-    return get_center_progress(request)
+    return get_center_progress(request)
+
+
+@csrf_exempt
+def get_executive_dashboard(request):
+    """
+    Returns Executive Dashboard & Cockpit analytics from SP usp_ExecutiveDashboard.
+    Supports report_type query param / body: 'ALL', 'KPIS', 'RISK_MATRIX', 'PLAN_PROGRESS',
+    'GRADE_DISTRIBUTION', 'REGIONAL_HEATMAP', 'ALERTS', 'PORTFOLIO_RISK'
+    """
+    if request.method not in ['GET', 'POST']:
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        token = request.headers.get('Authorization', '').replace('Bearer ', '')
+        payload = {}
+        if request.method == 'POST':
+            payload, _ = parse_post_payload(request, "get_executive_dashboard")
+            payload = payload or {}
+            token = token or payload.get('token', '')
+        else:
+            token = token or request.GET.get('token', '')
+
+        user = None
+        if token:
+            user, error_resp = validate_user_view(token)
+            if error_resp:
+                return error_resp
+
+        report_type = request.GET.get('report_type') or payload.get('report_type') or 'ALL'
+        as_on_date = request.GET.get('as_on_date') or payload.get('as_on_date')
+        auditor_id = request.GET.get('auditor_id') or payload.get('auditor_id')
+
+        handler = GetExecutiveDashboardQueryHandler()
+        result = handler.execute(GetExecutiveDashboardQuery(
+            user=user, 
+            report_type=report_type, 
+            as_on_date=as_on_date,
+            auditor_id=auditor_id
+        ))
+        return JsonResponse(result, status=result.get('status_code', 200))
+    except Exception as e:
+        logger.error(f"get_executive_dashboard view failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': str(e)}, status=500)
+
+
