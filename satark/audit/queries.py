@@ -2646,7 +2646,29 @@ class GetAuditeeAuditsQueryHandler(QueryHandler):
                     LEFT JOIN dbo.VW_Branch_To_GeographicalHierarchy b ON p.audit_branch_id = b.BranchID
                     LEFT JOIN dbo.accounts_mst_usertbl u ON p.audit_assigned_to = u.UserID
                     LEFT JOIN dbo.audit_plan_current c ON p.audit_id = c.id
-                    LEFT JOIN dbo.audit_branch_score_summary s ON p.audit_id = s.audit_id
+                    LEFT JOIN (select abs.audit_id ,abs.branch_id ,abs.total_score as branch_total_score , abs.total_max_score as branch_max_score,
+a.center_total_score , a.center_total_max_score , b.client_total_score , b.client_total_max_score,
+(abs.total_max_score + a.center_total_max_score + b.client_total_max_score) AS total_max_score,
+(abs.total_score + a.center_total_score + b.client_total_score) as total_score,
+CAST(
+    (
+        (abs.total_score + a.center_total_score + b.client_total_score) * 1.0
+        /
+        (abs.total_max_score + a.center_total_max_score + b.client_total_max_score)
+    ) * 100
+    AS DECIMAL(18,2)
+)as score_pct
+from audit_branch_score_summary abs
+cross apply (
+select audit_id, CAST(sum(acs.total_score) * 1.0 /count(distinct acs.center_id) AS DECIMAL(10,2)) as center_total_score , sum(acs.total_max_score)/count(distinct acs.center_id) as center_total_max_score
+from audit_center_score_summary acs where abs.audit_id = acs.audit_id
+group by acs.audit_id
+) A 
+cross apply (
+select audit_id, CAST(SUM(acss.total_score) * 1.0 / COUNT(DISTINCT acss.client_id) AS DECIMAL(10,2)) as client_total_score, sum(acss.total_max_score)/count(distinct acss.client_id) as  client_total_max_score
+from audit_client_score_summary acss where abs.audit_id = acss.audit_id
+group by acss.audit_id
+) B ) s on s.audit_id = p.audit_id
                     WHERE (p.audit_status = 'completed' or p.audit_status='reverted' or p.audit_status='submitted') 
                       AND p.audit_branch_id IN ({placeholders})
                     ORDER BY p.audit_end_date DESC
