@@ -1,0 +1,26 @@
+name: Auto Sync Main to Production Branch
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  sync-main-to-production:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Merge main into satark_production and Push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin main satark_production
+          git checkout satark_production
+          git merge origin/main --ff-only || git merge origin/main --no-ff -m "Auto-merge main into satark_production"
+          git push origin satark_production

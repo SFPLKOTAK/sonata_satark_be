@@ -78,10 +78,14 @@ jobs:
               (Get-Item "C:\inetpub\wwwroot\sonata_satark_be\satark\web.config").LastWriteTime = Get-Date
           }
 
-          if (Test-Path "C:\Windows\SysNative\inetsrv\appcmd.exe") {
-              & C:\Windows\SysNative\inetsrv\appcmd.exe recycle apppool "satark_fe"
-          } elseif (Test-Path "C:\Windows\System32\inetsrv\appcmd.exe") {
-              & C:\Windows\System32\inetsrv\appcmd.exe recycle apppool "satark_fe"
+          try {
+              if (Test-Path "C:\Windows\System32\inetsrv\appcmd.exe") {
+                  & C:\Windows\System32\inetsrv\appcmd.exe recycle apppool "satark_fe" 2>$null
+              } elseif (Test-Path "C:\Windows\SysNative\inetsrv\appcmd.exe") {
+                  & C:\Windows\SysNative\inetsrv\appcmd.exe recycle apppool "satark_fe" 2>$null
+              }
+          } catch {
+              Write-Host "IIS AppPool recycle notice: $_"
           }
           $global:LASTEXITCODE = 0
 
