@@ -24,7 +24,9 @@ from .commands import (
     SaveSelectedCentersCommand, SaveSelectedCentersCommandHandler,
     SubmitForReviewCommand, SubmitForReviewCommandHandler,
     RecordPointDecisionCommand, RecordPointDecisionCommandHandler,
-    FinalizeReviewCommand, FinalizeReviewCommandHandler
+    FinalizeReviewCommand, FinalizeReviewCommandHandler,
+    CreateFraudCaseCommand, CreateFraudCaseCommandHandler,
+    UpdateFraudCaseCommand, UpdateFraudCaseCommandHandler
 )
 from .queries import (
     GetChecklistPointsQuery, GetChecklistPointsQueryHandler,
@@ -65,7 +67,9 @@ from .queries import (
     GetAuditeeDashboardQuery, GetAuditeeDashboardQueryHandler,
     GetAuditeeAuditsQuery, GetAuditeeAuditsQueryHandler,
     GetAuditeeCapsQuery, GetAuditeeCapsQueryHandler,
-    GetExecutiveDashboardQuery, GetExecutiveDashboardQueryHandler
+    GetExecutiveDashboardQuery, GetExecutiveDashboardQueryHandler,
+    GetFraudCasesQuery, GetFraudCasesQueryHandler,
+    GetFraudAuditorBranchesQuery, GetFraudAuditorBranchesQueryHandler
 )
 
 logger = logging.getLogger("audit.views")
@@ -85,6 +89,8 @@ dispatcher.register_command(SaveSelectedCentersCommand, SaveSelectedCentersComma
 dispatcher.register_command(SubmitForReviewCommand, SubmitForReviewCommandHandler())
 dispatcher.register_command(RecordPointDecisionCommand, RecordPointDecisionCommandHandler())
 dispatcher.register_command(FinalizeReviewCommand, FinalizeReviewCommandHandler())
+dispatcher.register_command(CreateFraudCaseCommand, CreateFraudCaseCommandHandler())
+dispatcher.register_command(UpdateFraudCaseCommand, UpdateFraudCaseCommandHandler())
 
 # Register queries with dispatcher
 dispatcher.register_query(GetChecklistPointsQuery, GetChecklistPointsQueryHandler())
@@ -126,6 +132,7 @@ dispatcher.register_query(GetAuditeeDashboardQuery, GetAuditeeDashboardQueryHand
 dispatcher.register_query(GetAuditeeAuditsQuery, GetAuditeeAuditsQueryHandler())
 dispatcher.register_query(GetAuditeeCapsQuery, GetAuditeeCapsQueryHandler())
 dispatcher.register_query(GetExecutiveDashboardQuery, GetExecutiveDashboardQueryHandler())
+dispatcher.register_query(GetFraudCasesQuery, GetFraudCasesQueryHandler())
 
 
 # --- Reusable View Helper ---
@@ -1803,4 +1810,165 @@ def get_executive_dashboard(request):
         logger.error(f"get_executive_dashboard view failed: {str(e)}")
         return JsonResponse({'success': False, 'message': str(e)}, status=500)
 
-
+
+# =============================================================================
+# --- Fraud Module Endpoints (dbo.audit_fraud_cases) ---
+# =============================================================================
+
+@csrf_exempt
+def get_fraud_cases(request):
+    """
+    Retrieve list of reported fraud cases with filters:
+    category, status, branch_id, auditor_id, search, case_id
+    """
+    if request.method not in ['GET', 'POST']:
+        return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    try:
+        token = request.headers.get('Authorization', '').replace('Bearer ', '')
+        payload = {}
+        if request.method == 'POST':
+            payload, _ = parse_post_payload(request, "get_fraud_cases")
+            payload = payload or {}
+            token = token or payload.get('token', '')
+        else:
+            token = token or request.GET.get('token', '')
+
+        user = None
+        if token:
+            user = validate_token_user(token)
+
+        branch_id = request.GET.get('branch_id') or payload.get('branch_id')
+        category = request.GET.get('category') or payload.get('category')
+        status = request.GET.get('status') or payload.get('status')
+        search = request.GET.get('search') or payload.get('search')
+        auditor_id = request.GET.get('auditor_id') or payload.get('auditor_id')
+        case_id = request.GET.get('case_id') or payload.get('case_id')
+
+        if not auditor_id and user:
+            auditor_id = getattr(user, 'UserID', None) or getattr(user, 'id', None) or getattr(user, 'UserCode', None) or getattr(user, 'EmpID', None)
+
+        
+
+        query = GetFraudCasesQuery(
+            user=user,
+            branch_id=branch_id,
+            status=status,
+            category=category,
+            search=search,
+            auditor_id=auditor_id,
+            case_id=case_id
+        )
+        handler = GetFraudCasesQueryHandler()
+        result = handler.execute(query)
+        return JsonResponse(result, status=result.get('status_code', 200), encoder=DecimalEncoder)
+    except Exception as e:
+        logger.error(f"get_fraud_cases view failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': str(e)}, status=500)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def create_fraud_case(request):
+    """
+    Record and create a new fraud case in dbo.audit_fraud_cases.
+    """
+    try:
+        token = request.headers.get('Authorization', '').replace('Bearer ', '')
+        payload, error_resp = parse_post_payload(request, "create_fraud_case")
+        if error_resp:
+            return error_resp
+
+        payload = payload or {}
+        token = token or payload.get('token', '')
+        user = None
+        user_id = None
+        user_name = None
+        if token:
+            user = validate_token_user(token)
+            if user:
+                user_id = getattr(user, 'UserID', None) or getattr(user, 'emp_id', None)
+                user_name = getattr(user, 'UserName', None) or getattr(user, 'name', None)
+
+        user_id = user_id or payload.get('CreatedByAuditorId') or 'AUD-001'
+        user_name = user_name or payload.get('CreatedByAuditorName') or 'Auditor'
+
+        command = CreateFraudCaseCommand(data=payload, user_id=user_id, user_name=user_name)
+        handler = CreateFraudCaseCommandHandler()
+        result = handler.execute(command)
+        return JsonResponse(result, status=result.get('status_code', 201), encoder=DecimalEncoder)
+    except Exception as e:
+        logger.error(f"create_fraud_case view failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': str(e)}, status=500)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def update_fraud_case(request):
+    """
+    Update stages, actions, police complaint, or disciplinary fields for a fraud case.
+    """
+    try:
+        token = request.headers.get('Authorization', '').replace('Bearer ', '')
+        payload, error_resp = parse_post_payload(request, "update_fraud_case")
+        if error_resp:
+            return error_resp
+
+        payload = payload or {}
+        token = token or payload.get('token', '')
+        user = None
+        user_id = None
+        if token:
+            user = validate_token_user(token)
+            if user:
+                user_id = getattr(user, 'UserID', None)
+
+        case_id = payload.get('case_id') or payload.get('Id')
+        updates = payload.get('updates') or {k: v for k, v in payload.items() if k not in ['case_id', 'Id', 'token']}
+
+        command = UpdateFraudCaseCommand(case_id=case_id, updates=updates, user_id=user_id)
+        handler = UpdateFraudCaseCommandHandler()
+        result = handler.execute(command)
+        return JsonResponse(result, status=result.get('status_code', 200), encoder=DecimalEncoder)
+    except Exception as e:
+        logger.error(f"update_fraud_case view failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': str(e)}, status=500)
+
+
+@csrf_exempt
+def get_fraud_auditor_branches(request):
+    """
+    Fetch branches assigned to the auditor using [dbo].[SP_FRAUD_DETAILS] @ReportType = 'fraud auditor branch'.
+    """
+    try:
+        token = request.headers.get('Authorization', '').replace('Bearer ', '')
+        auditor_id = request.GET.get('auditor_id')
+        report_type = request.GET.get('ReportType') or request.GET.get('report_type') or 'fraud auditor branch'
+
+        if request.method == 'POST':
+            try:
+                body = json.loads(request.body.decode('utf-8'))
+                token = token or body.get('token', '')
+                auditor_id = auditor_id or body.get('auditor_id')
+                report_type = body.get('ReportType') or body.get('report_type') or report_type
+            except Exception:
+                pass
+
+        user = None
+        if token:
+            user = validate_token_user(token)
+
+        if not auditor_id and user:
+            auditor_id = getattr(user, 'UserID', None) or getattr(user, 'id', None)
+
+        query = GetFraudAuditorBranchesQuery(auditor_id=auditor_id, report_type=report_type)
+        handler = GetFraudAuditorBranchesQueryHandler()
+        result = handler.execute(query)
+        return JsonResponse(result, status=result.get('status_code', 200), encoder=DecimalEncoder)
+    except Exception as e:
+        logger.error(f"get_fraud_auditor_branches view failed: {str(e)}")
+        return JsonResponse({'success': False, 'message': str(e)}, status=500)
+
+
+
+

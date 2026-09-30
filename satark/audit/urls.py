@@ -32,7 +32,9 @@ from .views import (
     get_compliance_tickets, get_auditor_compliance_tickets, send_ticket_alert, resolve_ticket, initiate_ticket_call,
     submit_ticket_response, view_ticket_response_file, get_branch_ml_risk_predictions, get_branch_past_audits_trend,
     get_center_progress, get_client_progress,
-    get_executive_dashboard
+    get_executive_dashboard,
+    # Fraud Cases
+    get_fraud_cases, create_fraud_case, update_fraud_case, get_fraud_auditor_branches
 )
 
 urlpatterns = [
@@ -130,4 +132,11 @@ urlpatterns = [
     path('compliance/tickets/<int:ticket_id>/call/', initiate_ticket_call, name='initiate_ticket_call'),
     path('compliance/tickets/<int:ticket_id>/respond/', submit_ticket_response, name='submit_ticket_response'),
     path('compliance/responses/<int:response_id>/file/', view_ticket_response_file, name='view_ticket_response_file'),
+
+    # Fraud Module Routes (dbo.audit_fraud_cases & SP_FRAUD_DETAILS)
+    path('fraud-cases/', get_fraud_cases, name='get_fraud_cases'),
+    path('fraud-cases/create/', create_fraud_case, name='create_fraud_case'),
+    path('fraud-cases/update/', update_fraud_case, name='update_fraud_case'),
+    path('fraud-auditor-branches/', get_fraud_auditor_branches, name='get_fraud_auditor_branches'),
 ]
+

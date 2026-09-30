@@ -3008,14 +3008,9 @@ class GetAuditorComplianceTicketsQueryHandler(QueryHandler):
             tickets = []
             with connection.cursor() as cursor:
                 where_clause = """
-                    WHERE (
-                        ct.auditor_id = %s 
-                        OR apc.assigned_auditor = %s
-                        OR ct.audit_id IN (SELECT id FROM dbo.audit_plan_current WHERE assigned_auditor = %s)
-                        OR TRY_CAST(ct.branch_id AS INT) IN (SELECT branch_id FROM dbo.audit_plan_current WHERE assigned_auditor = %s)
-                    )
+                    WHERE (ct.audit_id IN (SELECT id FROM dbo.audit_plan_current WHERE assigned_auditor = %s))
                 """
-                params = [query.user_id, query.user_id, query.user_id, query.user_id]
+                params = [query.user_id]
 
                 # Branch Tickets
                 sql = f"""
@@ -3025,7 +3020,7 @@ class GetAuditorComplianceTicketsQueryHandler(QueryHandler):
                            abp.audit_status AS audit_progress_status
                     FROM dbo.compliance_tickets ct
                     JOIN dbo.audit_branch_checklist_feedback bf ON ct.feedback_id = bf.id AND ct.cap_type = 'BRANCH'
-                    LEFT JOIN dbo.audit_plan_current apc ON (ct.audit_id = apc.id OR (ct.auditor_id = apc.assigned_auditor AND TRY_CAST(ct.branch_id AS INT) = apc.branch_id))
+                    LEFT JOIN dbo.audit_plan_current apc ON (ct.audit_id = apc.id)
                     LEFT JOIN dbo.audit_branch_progress abp ON (apc.id = abp.audit_id OR ct.audit_id = abp.audit_id)
                     LEFT JOIN dbo.VW_Branch_To_GeographicalHierarchy b ON TRY_CAST(ct.branch_id AS INT) = b.BranchID
                     LEFT JOIN dbo.accounts_mst_usertbl u1 ON ct.auditor_id = u1.UserID
@@ -3218,4 +3213,156 @@ class GetExecutiveDashboardQueryHandler(QueryHandler):
         except Exception as e:
             log_error(f"GetExecutiveDashboardQueryHandler failed: {str(e)}")
             return {'success': False, 'message': str(e), 'status_code': 500}
+
+
+# --- Fraud Cases Queries (dbo.audit_fraud_cases) ---
+
+class GetFraudCasesQuery(Query):
+    def __init__(self, user=None, branch_id=None, status=None, category=None, search=None, auditor_id=None, case_id=None):
+        self.user = user
+        self.branch_id = branch_id
+        self.status = status
+        self.category = category
+        self.search = search
+        self.auditor_id = auditor_id
+        self.case_id = case_id
+
+
+class GetFraudCasesQueryHandler(QueryHandler):
+    def execute(self, query: GetFraudCasesQuery) -> dict:
+        try:
+            with connection.cursor() as cursor:
+                sql = "SELECT * FROM dbo.audit_fraud_cases WHERE 1=1"
+                params = []
+
+                if query.case_id:
+                    sql += " AND Id = %s"
+                    params.append(query.case_id)
+
+                if query.auditor_id:
+                    sql += " AND (CreatedByAuditorId = %s)"
+                    params.extend([query.auditor_id])
+
+                if query.branch_id:
+                    sql += " AND BranchID = %s"
+                    params.append(query.branch_id)
+
+                if query.category and query.category != 'All':
+                    sql += " AND CategoryOfIrregularity = %s"
+                    params.append(query.category)
+
+                if query.status and query.status != 'All':
+                    if query.status == 'Pending':
+                        sql += " AND CurrentStage <> 'Closed'"
+                    else:
+                        sql += " AND CurrentStage = %s"
+                        params.append(query.status)
+
+                if query.search and query.search.strip():
+                    search_term = f"%{query.search.strip()}%"
+                    sql += """ AND (
+                        CaseReferenceNo LIKE %s OR 
+                        Suspect_UserName LIKE %s OR 
+                        BranchName LIKE %s OR 
+                        Zone LIKE %s OR 
+                        KmblFraudNo LIKE %s
+                    )"""
+                    params.extend([search_term, search_term, search_term, search_term, search_term])
+
+                sql += " ORDER BY CreatedAt DESC, Id DESC"
+                
+
+                cursor.execute(sql, params)
+                cols = [col[0] for col in cursor.description]
+                raw_rows = cursor.fetchall()
+
+                cases = []
+                for row in raw_rows:
+                    row_dict = dict(zip(cols, row))
+                    for k, v in row_dict.items():
+                        if isinstance(v, decimal.Decimal):
+                            row_dict[k] = float(v)
+                        elif hasattr(v, 'isoformat'):
+                            row_dict[k] = v.isoformat()
+                    cases.append(row_dict)
+
+                return {
+                    'success': True,
+                    'cases': cases,
+                    'count': len(cases),
+                    'status_code': 200
+                }
+        except Exception as e:
+            log_error(f"GetFraudCasesQueryHandler failed: {str(e)}")
+            return {'success': False, 'message': str(e), 'status_code': 500}
+
+
+class GetFraudAuditorBranchesQuery(Query):
+    def __init__(self, auditor_id=None, report_type='fraud auditor branch'):
+        self.auditor_id = auditor_id
+        self.report_type = report_type or 'fraud auditor branch'
+
+
+class GetFraudAuditorBranchesQueryHandler(QueryHandler):
+    def execute(self, query: GetFraudAuditorBranchesQuery) -> dict:
+        auditor_id = query.auditor_id
+        report_type = query.report_type or 'fraud auditor branch'
+        try:
+            with connection.cursor() as cursor:
+                try:
+                    cursor.execute("""
+                        EXEC [dbo].[SP_FRAUD_DETAILS]
+                            @auditor_id = %s,
+                            @ReportType = %s
+                    """, [auditor_id, report_type])
+                    cols = [col[0] for col in cursor.description] if cursor.description else []
+                    rows = cursor.fetchall() if cursor.description else []
+                except Exception as sp_err:
+                    logger.warning(f"Stored procedure SP_FRAUD_DETAILS failed, attempting direct query: {str(sp_err)}")
+                    # Direct query fallback
+                    cursor.execute("""
+                        SELECT 
+                            apc.id, 
+                            apc.assigned_auditor, 
+                            apc.branch_id, 
+                            apc.branch, 
+                            vgh.hub, 
+                            vgh.region, 
+                            vgh.division, 
+                            vgh.zone
+                        FROM audit_plan_current apc
+                        JOIN vw_branch_to_geographicalhierarchy vgh ON apc.branch_id = vgh.branchid
+                        WHERE apc.assigned_auditor = %s
+                    """, [auditor_id])
+                    cols = [col[0] for col in cursor.description] if cursor.description else []
+                    rows = cursor.fetchall() if cursor.description else []
+
+                branches = []
+                for row in rows:
+                    row_dict = dict(zip(cols, row))
+                    b_id = row_dict.get('branch_id') or row_dict.get('Branch_ID') or row_dict.get('id')
+                    b_name = row_dict.get('branch') or row_dict.get('Branch') or row_dict.get('branch_name') or row_dict.get('BranchName')
+                    branches.append({
+                        'id': b_id,
+                        'branch_id': b_id,
+                        'branch': b_name,
+                        'name': b_name,
+                        'assigned_auditor': row_dict.get('assigned_auditor') or row_dict.get('Assigned_Auditor'),
+                        'hub': row_dict.get('hub') or row_dict.get('Hub') or '',
+                        'region': row_dict.get('region') or row_dict.get('Region') or '',
+                        'division': row_dict.get('division') or row_dict.get('Division') or '',
+                        'zone': row_dict.get('zone') or row_dict.get('Zone') or ''
+                    })
+
+                return {
+                    'success': True,
+                    'branches': branches,
+                    'count': len(branches),
+                    'status_code': 200
+                }
+        except Exception as e:
+            log_error(f"GetFraudAuditorBranchesQueryHandler failed: {str(e)}")
+            return {'success': False, 'message': str(e), 'status_code': 500}
+
+
 

@@ -138,7 +138,7 @@ class LoginCommandHandler(CommandHandler):
         name = user.UserName
 
         user_details = {
-            'id': user.id,
+            'id': user.UserID,
             'usercode': usercode,
             'name': name,
             'role': role,

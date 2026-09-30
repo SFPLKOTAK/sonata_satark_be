@@ -1561,3 +1561,237 @@ class SubmitTicketResponseCommandHandler(CommandHandler):
         except Exception as e:
             log_error(f"SubmitTicketResponseCommand failed: {str(e)}")
             return {'success': False, 'message': str(e), 'status_code': 500}
+
+
+# --- Fraud Register Commands (dbo.audit_fraud_cases) ---
+
+class CreateFraudCaseCommand(Command):
+    def __init__(self, data: dict, user_id=None, user_name=None):
+        self.data = data
+        self.user_id = user_id
+        self.user_name = user_name
+
+
+class CreateFraudCaseCommandHandler(CommandHandler):
+    def execute(self, command: CreateFraudCaseCommand) -> dict:
+        try:
+            import datetime
+            data = command.data or {}
+
+            def sanitize_date(val):
+                if not val or str(val).strip() == '' or str(val).lower() == 'null':
+                    return None
+                return str(val).strip()
+
+            def sanitize_num(val, default=0.0):
+                if val is None or str(val).strip() == '':
+                    return default
+                try:
+                    return float(val)
+                except (ValueError, TypeError):
+                    return default
+
+            def sanitize_int(val, default=0):
+                if val is None or str(val).strip() == '':
+                    return default
+                try:
+                    return int(val)
+                except (ValueError, TypeError):
+                    return default
+
+            with connection.cursor() as cursor:
+                case_ref = data.get('CaseReferenceNo')
+                if not case_ref or str(case_ref).strip() == '':
+                    cursor.execute("SELECT COUNT(1) + 1 FROM dbo.audit_fraud_cases")
+                    count_val = cursor.fetchone()[0]
+                    curr_year = datetime.date.today().year
+                    case_ref = f"FR-{curr_year}-{count_val:03d}"
+
+                total_amount = sanitize_num(data.get('TotalAmountInvolved'), 0.0)
+                category = data.get('CategoryOfIrregularity')
+                if not category:
+                    category = '1_LAKH_AND_ABOVE' if total_amount >= 100000 else 'BELOW_1_LAKH'
+
+                insert_sql = """
+                    INSERT INTO dbo.audit_fraud_cases (
+                        CaseReferenceNo, KmblFraudNo, CategoryOfIrregularity, NatureOfEvent, CurrentStage,
+                        Zone, Hub, Region, Division, BranchName, BranchID,
+                        Suspect_UserID, Suspect_UserName,
+                        AreaOfOperation, IsBorrowerAccountAffected, NatureOfFraud,
+                        AffectedBorrowersCount, AffectedLoanAccountsCount,
+                        TotalAmountInvolved, AmountRecovered, OutstandingAmount,
+                        PreClosureAmount, PreClosureAccountsCount,
+                        InstallmentAmount, InstallmentAccountsCount,
+                        OverdueOdAmount, OverdueOdAccountsCount,
+                        VaultEmbezzledAmount, OtherMisappropriationAmount, OtherMisappropriationDesc,
+                        PeriodFrom, PeriodTo, DateOfFirstOccurrence, DateOfDetection, ReportSubmissionDate, DateOfClassification,
+                        IsDetectionDelayed, DelayReason,
+                        ModeOfDetection, BriefHistoryModusOperandi, ControlProcessLapses,
+                        AuditConductedDuringPeriod, ReasonUndetectedInPast, AuditorRecommendations, ItSystemImprovementNeeded,
+                        PoliceComplaintStatus, PoliceStationName, SpeedPostTrackingNo, SpeedPostDispatchDate,
+                        FirStatus, FirNumber, DepartmentalEnquiry, ScnIssuedDate, ReasonedOrderDate, InsuranceClaimStatus,
+                        CreatedByAuditorId, CreatedByAuditorName, SupportingDocPaths,
+                        CreatedAt, UpdatedAt
+                    )
+                    OUTPUT INSERTED.Id, INSERTED.CaseReferenceNo
+                    VALUES (
+                        %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s,
+                        %s, %s,
+                        %s, %s, %s,
+                        %s, %s,
+                        %s, %s, %s,
+                        %s, %s,
+                        %s, %s,
+                        %s, %s,
+                        %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s,
+                        %s, %s,
+                        %s, %s, %s,
+                        %s, %s, %s, %s,
+                        %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s,
+                        SYSUTCDATETIME(), SYSUTCDATETIME()
+                    )
+                """
+
+                params = [
+                    case_ref,
+                    data.get('KmblFraudNo') or None,
+                    category,
+                    data.get('NatureOfEvent', 'Fraud'),
+                    data.get('CurrentStage', 'Submitted (Internal Audit)'),
+
+                    data.get('Zone', ''),
+                    data.get('Hub', ''),
+                    data.get('Region', ''),
+                    data.get('Division', ''),
+                    data.get('BranchName', ''),
+                    sanitize_int(data.get('BranchID'), None),
+
+                    sanitize_int(data.get('Suspect_UserID'), 0),
+                    data.get('Suspect_UserName', ''),
+
+                    data.get('AreaOfOperation', 'Cash'),
+                    1 if data.get('IsBorrowerAccountAffected') in [1, True, '1', 'true', 'True'] else 0,
+                    data.get('NatureOfFraud', 'Misappropriation and breach of trust'),
+                    sanitize_int(data.get('AffectedBorrowersCount'), 0),
+                    sanitize_int(data.get('AffectedLoanAccountsCount'), 0),
+
+                    total_amount,
+                    sanitize_num(data.get('AmountRecovered'), 0.0),
+                    sanitize_num(data.get('OutstandingAmount'), total_amount),
+
+                    sanitize_num(data.get('PreClosureAmount'), 0.0),
+                    sanitize_int(data.get('PreClosureAccountsCount'), 0),
+
+                    sanitize_num(data.get('InstallmentAmount'), 0.0),
+                    sanitize_int(data.get('InstallmentAccountsCount'), 0),
+
+                    sanitize_num(data.get('OverdueOdAmount'), 0.0),
+                    sanitize_int(data.get('OverdueOdAccountsCount'), 0),
+
+                    sanitize_num(data.get('VaultEmbezzledAmount'), 0.0),
+                    sanitize_num(data.get('OtherMisappropriationAmount'), 0.0),
+                    data.get('OtherMisappropriationDesc') or None,
+
+                    sanitize_date(data.get('PeriodFrom')),
+                    sanitize_date(data.get('PeriodTo')),
+                    sanitize_date(data.get('DateOfFirstOccurrence')),
+                    sanitize_date(data.get('DateOfDetection')) or datetime.date.today().isoformat(),
+                    sanitize_date(data.get('ReportSubmissionDate')) or datetime.date.today().isoformat(),
+                    sanitize_date(data.get('DateOfClassification')),
+
+                    1 if data.get('IsDetectionDelayed') in [1, True, '1', 'true'] else 0,
+                    data.get('DelayReason') or None,
+
+                    data.get('ModeOfDetection', 'Internal Audit'),
+                    data.get('BriefHistoryModusOperandi') or '',
+                    data.get('ControlProcessLapses') or '',
+                    1 if data.get('AuditConductedDuringPeriod') in [1, True, '1', 'true'] else 0,
+                    data.get('ReasonUndetectedInPast') or None,
+                    data.get('AuditorRecommendations') or '',
+                    1 if data.get('ItSystemImprovementNeeded') in [1, True, '1', 'true'] else 0,
+
+                    data.get('PoliceComplaintStatus', 'Pending Internal Inquiry'),
+                    data.get('PoliceStationName') or None,
+                    data.get('SpeedPostTrackingNo') or None,
+                    sanitize_date(data.get('SpeedPostDispatchDate')),
+                    data.get('FirStatus', 'Pending'),
+                    data.get('FirNumber') or None,
+                    1 if data.get('DepartmentalEnquiry', 1) in [1, True, '1', 'true'] else 0,
+                    sanitize_date(data.get('ScnIssuedDate')),
+                    sanitize_date(data.get('ReasonedOrderDate')),
+                    data.get('InsuranceClaimStatus', 'Not Lodged'),
+
+                    str(command.user_id or data.get('CreatedByAuditorId') or 'AUD-001'),
+                    str(command.user_name or data.get('CreatedByAuditorName') or 'Auditor'),
+                    str(data.get('SupportingDocPaths') or '[]')
+                ]
+
+                cursor.execute(insert_sql, params)
+                row = cursor.fetchone()
+                inserted_id = row[0] if row else None
+                inserted_case_ref = row[1] if row else case_ref
+
+            log_info(f"Created Fraud Case ID={inserted_id} CaseRef={inserted_case_ref}")
+            return {
+                'success': True,
+                'message': 'Fraud case recorded and registered successfully.',
+                'case_id': inserted_id,
+                'case_reference_no': inserted_case_ref,
+                'status_code': 201
+            }
+        except Exception as e:
+            log_error(f"CreateFraudCaseCommandHandler failed: {str(e)}")
+            return {'success': False, 'message': str(e), 'status_code': 500}
+
+
+class UpdateFraudCaseCommand(Command):
+    def __init__(self, case_id: int, updates: dict, user_id=None):
+        self.case_id = case_id
+        self.updates = updates
+        self.user_id = user_id
+
+
+class UpdateFraudCaseCommandHandler(CommandHandler):
+    def execute(self, command: UpdateFraudCaseCommand) -> dict:
+        try:
+            case_id = command.case_id
+            updates = command.updates or {}
+            if not case_id or not updates:
+                return {'success': False, 'message': 'Case ID and updates required', 'status_code': 400}
+
+            allowed_fields = [
+                'KmblFraudNo', 'CategoryOfIrregularity', 'NatureOfEvent', 'CurrentStage',
+                'TotalAmountInvolved', 'AmountRecovered', 'OutstandingAmount',
+                'DateOfClassification', 'PoliceComplaintStatus', 'PoliceStationName',
+                'SpeedPostTrackingNo', 'SpeedPostDispatchDate', 'FirStatus', 'FirNumber',
+                'DepartmentalEnquiry', 'ScnIssuedDate', 'ReasonedOrderDate', 'InsuranceClaimStatus',
+                'ControlProcessLapses', 'AuditorRecommendations'
+            ]
+
+            set_clauses = []
+            params = []
+            for k, v in updates.items():
+                if k in allowed_fields:
+                    set_clauses.append(f"{k} = %s")
+                    params.append(v)
+
+            if not set_clauses:
+                return {'success': False, 'message': 'No valid update fields provided', 'status_code': 400}
+
+            set_clauses.append("UpdatedAt = SYSUTCDATETIME()")
+            params.append(case_id)
+
+            sql = f"UPDATE dbo.audit_fraud_cases SET {', '.join(set_clauses)} WHERE Id = %s"
+
+            with connection.cursor() as cursor:
+                cursor.execute(sql, params)
+
+            log_info(f"Updated Fraud Case ID={case_id}")
+            return {'success': True, 'message': 'Fraud case updated successfully.', 'status_code': 200}
+        except Exception as e:
+            log_error(f"UpdateFraudCaseCommandHandler failed: {str(e)}")
+            return {'success': False, 'message': str(e), 'status_code': 500}
